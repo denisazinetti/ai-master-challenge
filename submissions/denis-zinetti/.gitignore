@@ -1,0 +1,7 @@
+solution/app/backend/app/data/raw/
+solution/app/backend/app/data/*.joblib
+solution/app/frontend/node_modules/
+solution/app/frontend/dist/
+*.sqlite3
+.env
+.venv/

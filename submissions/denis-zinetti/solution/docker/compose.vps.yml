@@ -1,0 +1,21 @@
+services:
+  signaldesk:
+    networks:
+      - default
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${TRAEFIK_NETWORK}"
+      - "traefik.http.routers.signaldesk.rule=Host(`${APP_HOST}`)"
+      - "traefik.http.routers.signaldesk.entrypoints=websecure"
+      - "traefik.http.routers.signaldesk.tls=true"
+      - "traefik.http.routers.signaldesk.tls.certresolver=${TRAEFIK_CERTRESOLVER}"
+      - "traefik.http.services.signaldesk.loadbalancer.server.port=8000"
+      - "traefik.http.routers.signaldesk-http.rule=Host(`${APP_HOST}`)"
+      - "traefik.http.routers.signaldesk-http.entrypoints=web"
+      - "traefik.http.routers.signaldesk-http.middlewares=signaldesk-https"
+      - "traefik.http.middlewares.signaldesk-https.redirectscheme.scheme=https"
+networks:
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK}
