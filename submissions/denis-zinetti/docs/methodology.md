@@ -1,7 +1,45 @@
 # Metodologia e qualidade de dados
 
-O Dataset 1 contém timestamps em `First Response Time` e `Time to Resolution`, mas não contém a abertura do ticket. Portanto, não é válido calcular tempo até primeira resposta: a aplicação mostra esse indicador como **N/D**.
+Princípio: antes de propor automação, testar o que cada dataset consegue sustentar. Todos os números abaixo são calculados no build (`prepare_data.py`, `diagnostics.py`), nunca digitados.
 
-Quando os dois timestamps existem, a análise calcula apenas o intervalo entre primeira resposta e resolução, corrigindo virada de dia. Esse é um proxy pós-resposta, não um SLA de primeira resposta.
+## 1. Auditoria do Dataset 1 (8.469 tickets)
 
-O risco usa prioridade, esse proxy, CSAT, recorrência e status. Ausências não são preenchidas com valores inventados. A comparação do Challenge 001 é descritiva e não estabelece causalidade.
+| Verificação | Resultado | Consequência |
+|---|---|---|
+| Abertura do ticket | Não existe | Não há SLA de primeira resposta; o indicador é exibido como **N/D**. |
+| Primeira resposta × resolução | Em ~49% dos pares a resolução é **anterior** à primeira resposta | Pares impossíveis são descartados (`NaN`), não “corrigidos”. Uma versão anterior somava 24h aos negativos; isso fabricava durações e foi removido. |
+| CSAT | Somente tickets encerrados (2.769) | Drivers de satisfação são testados só nessa base. |
+| Recorrência | 98% dos clientes têm um único ticket | O fator “recorrência” do risco quase nunca dispara; é mantido por política, não por evidência. |
+| Texto | 100% das descrições têm um placeholder não preenchido (`{product_purchased}`) | Placeholders são removidos antes de qualquer vetorização. |
+
+## 2. O que influencia o CSAT?
+
+Kruskal–Wallis para cada variável (canal, prioridade, tipo, assunto, produto, gênero, faixa etária, faixa de tempo pós-resposta), correção de Benjamini–Hochberg (FDR 5%), tamanho de efeito ε² e Spearman para tempo × CSAT. **Nenhuma das 8 variáveis é significativa** (menor p ajustado ≈ 0,89; ρ ≈ 0,00). Conclusão: não há alavanca comprovada sobre o CSAT; a proposta mede resultado em piloto em vez de prometer ganho.
+
+## 3. Onde o fluxo trava?
+
+O sinal confiável do dataset é o **status**: 67% dos tickets não estão encerrados, e a taxa é estatisticamente indistinta entre Critical e Low (χ², p ≈ 0,10). Ou seja, a prioridade declarada não está orientando o atendimento. Diferenças de tempo entre canal/prioridade não são interpretadas porque a duração é inválida em metade dos pares.
+
+## 4. Onde o texto funciona (prova de sinal)
+
+| Experimento | Acurácia / precisão | Acaso |
+|---|---|---|
+| D1 · prever tipo de ticket pelo texto | ~21% | 20% |
+| D1 · prever assunto pelo texto | ~6% | ~6% |
+| D1 · casos similares (mesmo assunto) | ~5,5% | ~6% |
+| D2 · classificar 8 categorias | 84,45% | ~19% |
+| D2 · casos similares (mesma categoria, top-3) | ~69% | ~19% |
+
+O texto do Dataset 1 não carrega sinal de categoria. Por isso a automação por texto é validada no Dataset 2 e, aplicada ao Dataset 1, passa sempre por revisão humana.
+
+## 5. Limiar de confiança
+
+O limiar de revisão (50%) vem da curva cobertura × acurácia em tickets de teste (Dataset 2): em 50% o roteamento automático atinge ~97% de acurácia cobrindo ~55% do volume; em 70% subiria a ~99,5%, mas só ~25% do volume ficaria automático. A curva está na aba Classificador NLP.
+
+## 6. Índice de risco
+
+Regra aditiva transparente (prioridade, resolução acima do P75 dos pares válidos, CSAT, recorrência, status). Como o Dataset 1 não tem driver estatístico de CSAT, os pesos são **política operacional**, não parâmetros ajustados — e isso está declarado na interface e no código. Não é probabilidade de churn.
+
+## 7. Challenge 001 (retenção)
+
+Join real por `account_id` entre contas, chamados e assinaturas. Teste de Mann–Whitney (FDR 5%) entre contas churnadas e retidas: tickets por conta, resolução, primeira resposta, CSAT e escalonamento **não diferem significativamente**. A hipótese “fricção de suporte antecipa churn” **não é sustentada** por esse dataset; ele é apresentado como evidência negativa, e nenhuma projeção de receita em risco é feita a partir dele.

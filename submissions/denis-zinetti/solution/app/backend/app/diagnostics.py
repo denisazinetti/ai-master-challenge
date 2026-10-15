@@ -1,0 +1,234 @@
+"""Statistical diagnostics for the support dataset.
+
+Everything here is computed at build time from the raw CSVs. The goal is to
+state what the data can and cannot support before any automation is proposed.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import numpy as np
+import pandas as pd
+from scipy import stats
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+
+ALPHA = 0.05
+# Below this classifier confidence a ticket goes to human triage. 0.5 keeps ~97% accuracy on auto-routed
+# tickets while covering ~55% of volume (see confidence_threshold_curve); 0.7 would cover only ~25%.
+REVIEW_THRESHOLD = 0.5
+
+
+def duration_hours(first_response: object, resolution: object) -> float | None:
+    """Hours between the two timestamps, or None when the pair is not a valid duration.
+
+    The raw file stores timestamps, not durations, and no ticket-opened time.
+    When "resolution" precedes "first response" the pair is impossible, so it is
+    discarded instead of being "repaired" (e.g. by adding 24h).
+    """
+    start, end = pd.to_datetime(first_response, errors="coerce"), pd.to_datetime(resolution, errors="coerce")
+    if pd.isna(start) or pd.isna(end):
+        return None
+    delta = (end - start).total_seconds() / 3600
+    return round(delta, 2) if delta >= 0 else None
+
+
+def _bh_adjust(p_values: list[float]) -> list[float]:
+    """Benjamini–Hochberg adjusted p-values (false-discovery-rate control)."""
+    n = len(p_values)
+    order = np.argsort(p_values)
+    adjusted = np.empty(n)
+    running = 1.0
+    for rank, idx in reversed(list(enumerate(order, start=1))):
+        running = min(running, p_values[idx] * n / rank)
+        adjusted[idx] = running
+    return adjusted.tolist()
+
+
+def data_audit(support: pd.DataFrame) -> dict[str, Any]:
+    first = pd.to_datetime(support["First Response Time"], errors="coerce")
+    resolved = pd.to_datetime(support["Time to Resolution"], errors="coerce")
+    both = first.notna() & resolved.notna()
+    delta = (resolved - first)[both].dt.total_seconds() / 3600
+    per_customer = support.groupby("Customer Email").size()
+    closed = support["Ticket Status"] == "Closed"
+    description = support["Ticket Description"].fillna("")
+    return {
+        "tickets": int(len(support)),
+        "closed": int(closed.sum()),
+        "closed_share": round(float(closed.mean()), 3),
+        "csat_coverage_closed": round(float(support.loc[closed, "Customer Satisfaction Rating"].notna().mean()), 3),
+        "csat_on_non_closed": int(support.loc[~closed, "Customer Satisfaction Rating"].notna().sum()),
+        "timestamp_pairs": int(both.sum()),
+        "resolution_before_first_response": int((delta < 0).sum()),
+        "resolution_before_first_response_share": round(float((delta < 0).mean()), 3),
+        "max_gap_hours": round(float(delta.abs().max()), 1),
+        "single_ticket_customers_share": round(float((per_customer == 1).mean()), 3),
+        "unfilled_template_placeholders": int(description.str.contains(r"\{[a-z_]+\}", regex=True).sum()),
+        "findings": [
+            "O arquivo traz timestamps de primeira resposta e resolução, mas não a abertura do ticket: não existe SLA de primeira resposta.",
+            "Em cerca de metade dos pares, a resolução é anterior à primeira resposta. Esses pares são descartados, não ‘corrigidos’.",
+            "CSAT existe apenas em tickets encerrados; o restante do funil não tem nota.",
+            "Quase todos os clientes têm um único ticket: recorrência não é um sinal utilizável neste dataset.",
+        ],
+    }
+
+
+def _group_summary(df: pd.DataFrame, column: str, min_n: int = 30) -> list[dict[str, Any]]:
+    rows = []
+    for value, group in df.groupby(column, observed=True):
+        n = len(group)
+        if n < min_n:
+            continue
+        mean = float(group["csat"].mean())
+        ci = 1.96 * float(group["csat"].std(ddof=1)) / np.sqrt(n)
+        rows.append({"segment": str(value), "n": int(n), "csat": round(mean, 2), "ci95": round(ci, 2)})
+    return sorted(rows, key=lambda r: r["csat"])
+
+
+def csat_drivers(support: pd.DataFrame) -> dict[str, Any]:
+    """Which variables explain CSAT? Kruskal–Wallis per variable, FDR-corrected, plus effect size."""
+    closed = support[support["Ticket Status"] == "Closed"].copy()
+    closed["csat"] = pd.to_numeric(closed["Customer Satisfaction Rating"], errors="coerce")
+    closed = closed.dropna(subset=["csat"])
+    closed["resolution_hours"] = [duration_hours(a, b) for a, b in zip(closed["First Response Time"], closed["Time to Resolution"])]
+    closed["age_band"] = pd.cut(closed["Customer Age"], [0, 25, 35, 45, 55, 120], labels=["≤25", "26–35", "36–45", "46–55", "56+"])
+    valid = closed["resolution_hours"].notna()
+    closed["resolution_band"] = pd.cut(closed["resolution_hours"], [-0.01, 4, 8, 12, 24], labels=["≤4h", "4–8h", "8–12h", "12–24h"])
+
+    variables = [
+        ("Canal", "Ticket Channel"), ("Prioridade", "Ticket Priority"), ("Tipo de ticket", "Ticket Type"),
+        ("Assunto", "Ticket Subject"), ("Produto", "Product Purchased"), ("Gênero", "Customer Gender"),
+        ("Faixa etária", "age_band"), ("Tempo pós-1ª resposta", "resolution_band"),
+    ]
+    results, p_values = [], []
+    for label, column in variables:
+        sample = closed[valid] if column == "resolution_band" else closed
+        groups = [g["csat"].to_numpy() for _, g in sample.groupby(column, observed=True) if len(g) >= 5]
+        h, p = stats.kruskal(*groups)
+        n = sum(len(g) for g in groups)
+        eta_sq = max(0.0, (h - len(groups) + 1) / (n - len(groups)))  # Kruskal–Wallis epsilon²/eta² approximation
+        results.append({"variable": label, "n": int(n), "levels": len(groups), "p_value": float(p), "effect_size": round(float(eta_sq), 4),
+                        "segments": _group_summary(sample, column)})
+        p_values.append(float(p))
+    for item, adjusted in zip(results, _bh_adjust(p_values)):
+        item["p_adjusted"] = round(adjusted, 4)
+        item["p_value"] = round(item["p_value"], 4)
+        item["significant"] = bool(adjusted < ALPHA)
+    results.sort(key=lambda r: r["p_adjusted"])
+
+    rho, rho_p = stats.spearmanr(closed.loc[valid, "resolution_hours"], closed.loc[valid, "csat"])
+    significant = [r["variable"] for r in results if r["significant"]]
+    dist = closed["csat"].value_counts(normalize=True).sort_index()
+    return {
+        "n": int(len(closed)),
+        "mean_csat": round(float(closed["csat"].mean()), 2),
+        "distribution": [{"rating": int(k), "share": round(float(v), 3)} for k, v in dist.items()],
+        "variables": results,
+        "resolution_spearman": {"rho": round(float(rho), 3), "p_value": round(float(rho_p), 4), "n": int(valid.sum())},
+        "significant_variables": significant,
+        "alpha": ALPHA,
+        "conclusion": (
+            f"Nenhuma das {len(results)} variáveis testadas explica o CSAT após correção de múltiplas comparações (FDR 5%)."
+            if not significant
+            else f"Variáveis com efeito detectável após correção FDR 5%: {', '.join(significant)}."
+        ),
+        "method": "Kruskal–Wallis por variável (tickets encerrados com nota), p-valor ajustado por Benjamini–Hochberg; tamanho de efeito ε²; Spearman para tempo × CSAT.",
+    }
+
+
+def channel_priority_matrix(support: pd.DataFrame) -> list[dict[str, Any]]:
+    frame = support.copy()
+    frame["resolution_hours"] = [duration_hours(a, b) for a, b in zip(frame["First Response Time"], frame["Time to Resolution"])]
+    frame["csat"] = pd.to_numeric(frame["Customer Satisfaction Rating"], errors="coerce")
+    frame["not_closed"] = frame["Ticket Status"] != "Closed"
+    grouped = frame.groupby(["Ticket Channel", "Ticket Priority"]).agg(
+        tickets=("Ticket ID", "count"), backlog=("not_closed", "mean"), resolution_hours=("resolution_hours", "mean"),
+        csat=("csat", "mean"), valid_pairs=("resolution_hours", "count"),
+    ).round(3).reset_index()
+    return [{"channel": r["Ticket Channel"], "priority": r["Ticket Priority"], "tickets": int(r["tickets"]), "backlog_share": float(r["backlog"]),
+             "resolution_hours": None if pd.isna(r["resolution_hours"]) else float(r["resolution_hours"]),
+             "csat": None if pd.isna(r["csat"]) else float(r["csat"]), "valid_pairs": int(r["valid_pairs"])} for _, r in grouped.iterrows()]
+
+
+def backlog_summary(support: pd.DataFrame) -> dict[str, Any]:
+    """Reliable bottleneck signal: unresolved share by priority/type (status is clean in this dataset)."""
+    not_closed = support["Ticket Status"] != "Closed"
+    by_priority = support.assign(nc=not_closed).groupby("Ticket Priority")["nc"].agg(["sum", "count"])
+    by_type = support.assign(nc=not_closed).groupby("Ticket Type")["nc"].agg(["sum", "count"])
+    chi2_p = float(stats.chi2_contingency(pd.crosstab(support["Ticket Priority"], not_closed))[1])
+    pack = lambda frame: [{"name": str(k), "not_closed": int(r["sum"]), "tickets": int(r["count"]), "share": round(float(r["sum"] / r["count"]), 3)} for k, r in frame.iterrows()]
+    return {"not_closed": int(not_closed.sum()), "share": round(float(not_closed.mean()), 3),
+            "pending_customer": int((support["Ticket Status"] == "Pending Customer Response").sum()),
+            "critical_not_closed": int(((support["Ticket Priority"] == "Critical") & not_closed).sum()), "priority_chi2_p": round(chi2_p, 4),
+            "by_priority": pack(by_priority), "by_type": pack(by_type)}
+
+
+def text_signal_check(support: pd.DataFrame) -> dict[str, Any]:
+    """Can the text of Dataset 1 predict its own labels? If not, text-based automation cannot be validated there."""
+    text = support["Ticket Description"].fillna("").astype(str).str.replace(r"\{[a-z_]+\}", " ", regex=True)
+    results = []
+    for label, column in (("Tipo de ticket", "Ticket Type"), ("Assunto", "Ticket Subject")):
+        y = support[column].astype(str)
+        x_train, x_test, y_train, y_test = train_test_split(text, y, test_size=.25, random_state=42, stratify=y)
+        vec = TfidfVectorizer(ngram_range=(1, 2), min_df=2, sublinear_tf=True)
+        clf = LogisticRegression(max_iter=300).fit(vec.fit_transform(x_train), y_train)
+        accuracy = float((clf.predict(vec.transform(x_test)) == y_test).mean())
+        results.append({"target": label, "classes": int(y.nunique()), "accuracy": round(accuracy, 3), "chance": round(1 / y.nunique(), 3),
+                        "majority_baseline": round(float(y_test.value_counts(normalize=True).iloc[0]), 3)})
+    return {"results": results,
+            "conclusion": "O texto do Dataset 1 prevê o próprio tipo/assunto apenas no nível do acaso: ele não carrega sinal de categoria. "
+                          "A classificação por texto é validada no Dataset 2; no Dataset 1 ela é usada com revisão humana obrigatória."}
+
+
+def confidence_threshold_curve(y_true: pd.Series, probabilities: np.ndarray, classes: np.ndarray) -> list[dict[str, Any]]:
+    """Coverage × accuracy trade-off: justifies the human-review threshold with held-out data."""
+    predicted = classes[probabilities.argmax(axis=1)]
+    confidence = probabilities.max(axis=1)
+    correct = predicted == y_true.to_numpy()
+    rows = []
+    for threshold in (0.0, .4, .5, .6, .7, .8, .9):
+        mask = confidence >= threshold
+        rows.append({"threshold": threshold, "coverage": round(float(mask.mean()), 3),
+                     "accuracy": round(float(correct[mask].mean()), 4) if mask.any() else None,
+                     "sent_to_review": round(float(1 - mask.mean()), 3)})
+    return rows
+
+
+class SimilarCaseIndex:
+    """TF-IDF cosine retrieval over labelled texts, with an offline held-out check."""
+
+    def __init__(self, texts: pd.Series, labels: pd.Series):
+        self.texts = texts.fillna("").astype(str).reset_index(drop=True)
+        self.labels = labels.astype(str).reset_index(drop=True)
+        self.vectorizer = TfidfVectorizer(ngram_range=(1, 2), min_df=2, max_features=50000, sublinear_tf=True, stop_words="english")
+        self.matrix = self.vectorizer.fit_transform(self.texts.str.replace(r"\{[a-z_]+\}", " ", regex=True))
+
+    def search(self, texts: list[str] | pd.Series, k: int = 3, exclude_self: bool = False) -> list[list[dict[str, Any]]]:
+        cleaned = pd.Series(list(texts)).fillna("").astype(str).str.replace(r"\{[a-z_]+\}", " ", regex=True)
+        vectors = self.vectorizer.transform(cleaned)
+        results: list[list[dict[str, Any]]] = []
+        for start in range(0, vectors.shape[0], 400):
+            scores = (vectors[start:start + 400] @ self.matrix.T).toarray()
+            for offset, row in enumerate(scores):
+                if exclude_self:
+                    row[start + offset] = -1
+                top = np.argpartition(row, -k)[-k:]
+                top = top[np.argsort(row[top])[::-1]]
+                results.append([{"index": int(i), "score": round(float(row[i]), 3), "label": self.labels.iloc[i], "text": self.texts.iloc[i]} for i in top if row[i] > 0.05])
+        return results
+
+    def leave_one_out(self, k: int = 3, sample: int = 1500) -> dict[str, Any]:
+        """Share of retrieved neighbours carrying the query's own label, versus the chance level of random retrieval."""
+        picks = self.texts.sample(min(sample, len(self.texts)), random_state=42).index
+        found = self.search(self.texts.loc[picks], k=k, exclude_self=False)
+        hits = total = 0
+        for idx, matches in zip(picks, found):
+            for match in matches:
+                if match["index"] == idx:
+                    continue
+                hits += match["label"] == self.labels.loc[idx]
+                total += 1
+        chance = float((self.labels.value_counts(normalize=True) ** 2).sum())
+        return {"k": k, "queries": int(len(picks)), "precision_at_k": round(hits / max(total, 1), 3), "chance": round(chance, 3)}

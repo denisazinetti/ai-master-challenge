@@ -5,6 +5,8 @@ import './styles.css';
 
 const fmt = new Intl.NumberFormat('pt-BR', {maximumFractionDigits: 1});
 const pct = v => `${(v * 100).toFixed(1)}%`;
+// Mirrors diagnostics.REVIEW_THRESHOLD; chosen from the held-out coverage × accuracy curve (Classificador tab).
+const REVIEW_THRESHOLD = 0.5;
 const COLORS = {Alto:'#ef4444', Médio:'#f59e0b', Baixo:'#10b981'};
 const CONF_COLORS = ['#79e4c2', '#f59e0b', '#94a5bf'];
 const NLP_CATEGORIES = [
@@ -30,7 +32,7 @@ const ROUTING_QUEUES = [
 
 const QUEUE_TABS = [
   { id: '', label: 'Todas as Filas', icon: '◈' },
-  { id: 'triage', label: 'Mesa de Triagem', icon: '📥', desc: 'Chamados com baixa confiança (<70%) retidos para validação manual de categoria' },
+  { id: 'triage', label: 'Mesa de Triagem', icon: '📥', desc: 'Chamados com baixa confiança (<50%) retidos para validação manual de categoria' },
   { id: 'copilot', label: 'Filas N1/N2 · Copiloto', icon: '⚡', desc: 'Roteamento 100% automático por alta confiança — rascunhos prontos para envio' },
   { id: 'cs_retention', label: 'Mesa CS & Retenção', icon: '🚨', desc: 'Chamados críticos e contas com risco de cancelamento (proteção direta de ARR)' },
   { id: 'finance', label: 'Financeiro & Billing', icon: '💰', desc: 'Dúvidas de fatura, cobrança e estorno (compliance manual estrito)' }
@@ -80,7 +82,7 @@ function getAutomationStatus(ticket) {
     return {
       label: 'Revisão de triagem',
       badgeClass: 'status-review',
-      hint: 'Confiança NLP < 70% — validar categoria antes de rotear',
+      hint: 'Confiança NLP < 50% — validar categoria antes de rotear',
       icon: '⚠'
     };
   }
@@ -173,6 +175,7 @@ function App() {
   const TAB_TITLES = {
     executivo: 'Onde o suporte perde tempo — e onde recuperar retenção',
     triagem: 'Fila priorizada por urgência de negócio',
+    diagnostico: 'O que os dados provam — e o que não provam',
     churn: 'Evidência complementar de retenção',
     classificador: 'Playground do classificador NLP',
     ticket: 'Copiloto do agente',
@@ -182,7 +185,7 @@ function App() {
     <aside>
       <div className="brand"><span>◈</span><div>G4Desk<small>Suporte &amp; Retenção</small></div></div>
       <nav>
-        {[['executivo','Visão executiva'],['triagem','Central de triagem'],['classificador','Classificador NLP'],['churn','Validação de retenção']].map(([id,label]) =>
+        {[['executivo','Visão executiva'],['triagem','Central de triagem'],['diagnostico','Diagnóstico estatístico'],['classificador','Classificador NLP'],['churn','Validação de retenção']].map(([id,label]) =>
           <button className={tab===id ? 'active' : ''} onClick={() => setTab(id)} key={id}>{label}</button>
         )}
       </nav>
@@ -198,7 +201,8 @@ function App() {
       </header>
       {tab === 'executivo' && <Executive data={data} riskData={riskData} modelMetrics={modelMetrics}/>}
       {tab === 'triagem' && <Triage tickets={tickets} filters={filters} setFilters={setFilters} openTicket={openTicket} testInClassifier={testInClassifier} insights={data.triage_insights}/>}
-      {tab === 'classificador' && <Classifier text={classifierText} setText={setClassifierText} autoRun={classifierAutoRun} setAutoRun={setClassifierAutoRun}/>}
+      {tab === 'diagnostico' && <Diagnostics data={data}/>}
+      {tab === 'classificador' && <Classifier modelMetrics={modelMetrics} text={classifierText} setText={setClassifierText} autoRun={classifierAutoRun} setAutoRun={setClassifierAutoRun}/>}
       {tab === 'churn' && <Churn data={data}/>}
       {tab === 'ticket' && selected && <Ticket ticket={selected} draft={draft} generate={generate} loading={loading} back={() => setTab('triagem')} testInClassifier={testInClassifier} onConfirmTriage={onConfirmTriage}/>}
     </main>
@@ -231,8 +235,9 @@ function Executive({data, riskData, modelMetrics}) {
       </article>
       <article className="panel">
         <h2>ROI por cenário</h2>
-        {data.roi.scenarios.map(x => <div className="scenario" key={x.name}><b>{x.name}</b><span>{x.monthly_hours_released}h/mês liberadas</span><strong>US$ {fmt.format(x.annual_capacity_value_usd)}/ano</strong></div>)}
-        <small>Capacidade potencial; não representa corte de equipe.</small>
+        <div className="scenario scenario-head"><span/><span>Volume do dataset ({fmt.format(data.roi.volumes.dataset_tickets)}/ano)</span><span>Volume do briefing ({fmt.format(data.roi.volumes.brief_tickets_per_year)}/ano)</span></div>
+        {data.roi.scenarios.map(x => <div className="scenario scenario-three" key={x.name}><b>{x.name}</b><span><strong>US$ {fmt.format(x.annual_capacity_value_usd)}</strong><small>{x.monthly_hours_released}h/mês</small></span><span><strong>US$ {fmt.format(x.annual_capacity_value_usd_brief)}</strong><small>{x.monthly_hours_released_brief}h/mês</small></span></div>)}
+        <small>Capacidade potencial de agentes (US$ {data.roi.assumptions.cost_per_hour_usd}/h), só rascunho assistido; não representa corte de equipe. Sem custo de implementação: ver business case.</small>
       </article>
     </section>
 
@@ -300,7 +305,7 @@ function Triage({tickets, filters, setFilters, openTicket, testInClassifier, ins
       </div>
       <div className="triage-insight-grid">
         <article className="panel triage-risk-chart"><h3>Backlog por risco</h3><div className="triage-risk-content"><ResponsiveContainer width="100%" height={190}><PieChart><Pie data={insights.risk_distribution} dataKey="value" nameKey="name" innerRadius={45} outerRadius={72}>{insights.risk_distribution.map(x => <Cell key={x.name} fill={COLORS[x.name]}/>)}</Pie><Tooltip/></PieChart></ResponsiveContainer><div className="risk-legend">{insights.risk_distribution.map(item => <div key={item.name}><span style={{backgroundColor: COLORS[item.name]}}/><b>{item.name}</b><strong>{fmt.format(item.value)}</strong></div>)}</div></div></article>
-        <article className="panel bottleneck-panel"><h3>Ranking de gargalos</h3><div className="bottleneck-list">{insights.bottlenecks.map((item, index) => <div className="bottleneck-row" key={`${item.ticket_type}-${item.subject}`}><span className="bottleneck-rank">#{index + 1}</span><div><b>{item.subject}</b><small>{item.ticket_type} · {item.open_tickets} abertos · {item.avg_resolution_hours}h</small><em>{item.action}</em></div>{(item.high_risk > 0 || item.critical > 0) && <span className="bottleneck-alert">{item.critical ? `${item.critical} crítico${item.critical > 1 ? 's' : ''}` : `${item.high_risk} risco alto`}</span>}</div>)}</div></article>
+        <article className="panel bottleneck-panel"><h3>Ranking de gargalos</h3><div className="bottleneck-list">{insights.bottlenecks.map((item, index) => <div className="bottleneck-row" key={`${item.ticket_type}-${item.subject}`}><span className="bottleneck-rank">#{index + 1}</span><div><b>{item.subject}</b><small>{item.ticket_type} · {item.open_tickets} não encerrados</small><em>{item.action}</em></div>{(item.high_risk > 0 || item.critical > 0) && <span className="bottleneck-alert">{item.critical ? `${item.critical} crítico${item.critical > 1 ? 's' : ''}` : `${item.high_risk} risco alto`}</span>}</div>)}</div></article>
       </div>
       <p className="triage-data-note"><b>Fonte:</b> {insights.source_note} {insights.limitation}</p>
     </section>}
@@ -342,18 +347,18 @@ function Triage({tickets, filters, setFilters, openTicket, testInClassifier, ins
       </div>
       {tickets.slice(0,150).map(t =>
         <button className="ticket-row" onClick={() => openTicket(t.id)} key={t.id}>
-          <span><b>#{t.id} · {t.subject}</b><small>{t.customer_name} · {t.ticket_type} · {t.resolution_hours}h</small></span>
+          <span><b>#{t.id} · {t.subject}</b><small>{t.customer_name} · {t.ticket_type}{t.resolution_hours != null ? ` · ${t.resolution_hours}h` : ''}</small></span>
           <span>{t.channel}</span>
           <span>{t.priority}</span>
           <span><Risk risk={t.risk}/></span>
           <span>
             <div className="nlp-badge-group">
               <span className="nlp-category">{t.classification?.category || 'N/D'}</span>
-              <span className={`nlp-conf ${t.classification?.confidence >= 0.70 ? 'metric-good' : t.classification?.confidence >= 0.40 ? 'metric-ok' : 'metric-warn'}`}>
+              <span className={`nlp-conf ${t.classification?.confidence >= REVIEW_THRESHOLD ? 'metric-good' : t.classification?.confidence >= 0.40 ? 'metric-ok' : 'metric-warn'}`}>
                 {t.classification ? `${(t.classification.confidence * 100).toFixed(0)}%` : ''}
               </span>
               {t.classification?.needs_review && (
-                <span className="nlp-review-tag" title="Confiança abaixo de 70% — exige confirmação humana">
+                <span className="nlp-review-tag" title="Confiança abaixo de 50% — exige confirmação humana">
                   ⚠ Revisão
                 </span>
               )}
@@ -399,7 +404,7 @@ function Triage({tickets, filters, setFilters, openTicket, testInClassifier, ins
 }
 
 /* ─── Playground do Classificador NLP ─── */
-function Classifier({text, setText, autoRun, setAutoRun}) {
+function Classifier({modelMetrics, text, setText, autoRun, setAutoRun}) {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -453,17 +458,17 @@ function Classifier({text, setText, autoRun, setAutoRun}) {
             <span className="eyebrow">CATEGORIA PREDITA</span>
             <h3>{result.category}</h3>
             {result.needs_review ? (
-              <span className="review-flag review-flag-warn">⚠ Confiança &lt; 70% · Requer triagem manual antes do roteamento</span>
+              <span className="review-flag review-flag-warn">⚠ Confiança &lt; 50% · Requer triagem manual antes do roteamento</span>
             ) : (
-              <span className="review-flag review-flag-ok">✓ Confiança ≥ 70% · Elegível para roteamento e rascunho assistivo</span>
+              <span className="review-flag review-flag-ok">✓ Confiança ≥ 50% · Elegível para roteamento e rascunho assistivo</span>
             )}
           </div>
           <div className="result-confidence">
             <span className="conf-label">Confiança</span>
             <div className="conf-bar-bg">
-              <div className="conf-bar-fill" style={{width: pct(result.confidence), background: result.confidence >= 0.70 ? '#79e4c2' : result.confidence >= 0.40 ? '#f59e0b' : '#ef4444'}}/>
+              <div className="conf-bar-fill" style={{width: pct(result.confidence), background: result.confidence >= REVIEW_THRESHOLD ? '#79e4c2' : result.confidence >= 0.40 ? '#f59e0b' : '#ef4444'}}/>
             </div>
-            <strong className={result.confidence >= 0.70 ? 'metric-good' : result.confidence >= 0.40 ? 'metric-ok' : 'metric-warn'}>
+            <strong className={result.confidence >= REVIEW_THRESHOLD ? 'metric-good' : result.confidence >= 0.40 ? 'metric-ok' : 'metric-warn'}>
               {pct(result.confidence)}
             </strong>
           </div>
@@ -483,11 +488,18 @@ function Classifier({text, setText, autoRun, setAutoRun}) {
           ))}
         </div>
 
+        {result.similar_cases?.length > 0 && <div className="result-similar">
+          <span className="eyebrow">CASOS SIMILARES NO HISTÓRICO (Dataset 2)</span>
+          {result.similar_cases.map((c, i) => <div className="similar" key={i}><b>{c.category} · similaridade {c.score}</b><p>{c.text}</p></div>)}
+        </div>}
+
         <div className="result-explain">
-          <p><b>Limiar de revisão:</b> Quando a confiança fica abaixo de 70%, o sistema marca o ticket para revisão humana obrigatória — o agente deve confirmar a categoria antes do roteamento.</p>
+          <p><b>Limiar de revisão:</b> Quando a confiança fica abaixo de 50%, o sistema marca o ticket para revisão humana obrigatória — o agente deve confirmar a categoria antes do roteamento.</p>
         </div>
       </div>}
     </section>
+
+    <ThresholdCurve metrics={modelMetrics}/>
 
     <section className="panel">
       <h2>Como funciona</h2>
@@ -504,7 +516,7 @@ function Classifier({text, setText, autoRun, setAutoRun}) {
         </article>
         <article className="insight">
           <h3>Guardrails</h3>
-          <p>Abaixo de 70% de confiança, o ticket exige revisão manual. Billing, críticos e compensações nunca são automatizados.</p>
+          <p>Abaixo de 50% de confiança, o ticket exige revisão manual. Billing, críticos e compensações nunca são automatizados.</p>
           <strong>IA assiste, humano decide</strong>
         </article>
       </div>
@@ -589,7 +601,7 @@ function Ticket({ticket, draft, generate, loading, back, testInClassifier, onCon
           <div className="triage-form">
             {ticket.classification?.needs_review && (
               <div className="triage-review-callout">
-                ⚠ <b>Revisão de triagem obrigatória:</b> O modelo teve confiança abaixo de 70%. Valide a categoria e selecione a fila antes do atendimento.
+                ⚠ <b>Revisão de triagem obrigatória:</b> O modelo teve confiança abaixo de 50%. Valide a categoria e selecione a fila antes do atendimento.
               </div>
             )}
             <div className="form-group">
@@ -685,12 +697,124 @@ function Ticket({ticket, draft, generate, loading, back, testInClassifier, onCon
       </article>
     </section>
     <section className="panel">
-      <h2>Casos do mesmo padrão</h2>
-      {ticket.similar.length
-        ? <><p className="similar-intro">Agrupados por tipo e tema do chamado para manter a resposta consistente.</p>{ticket.similar.map(x => <div className="similar" key={x.id}><b>#{x.id} · {x.subject}</b><p>{x.pattern}</p></div>)}</>
-        : <p>Nenhum caso fechado no mesmo padrão. Use o playbook de resposta acima.</p>}
+      <h2>Casos similares</h2>
+      <p>Sem casos exibidos de propósito: no Dataset 1 a busca por similaridade de texto fica no nível do acaso (ver Diagnóstico estatístico). Use o playbook de resposta acima ou cole o texto no Classificador NLP, onde a busca é validada.</p>
     </section>
   </>;
+}
+
+/* ─── Diagnóstico estatístico ─── */
+const pctInt = v => `${Math.round(v * 100)}%`;
+
+function MiniBar({value, max = 1, color = '#79e4c2'}) {
+  return <div className="mini-bar"><div style={{width: `${Math.min(100, (value / max) * 100)}%`, background: color}}/></div>;
+}
+
+function Diagnostics({data}) {
+  const audit = data.data_audit, csat = data.csat_drivers, backlog = data.backlog, text = data.text_signal_check, retrieval = data.retrieval_eval, matrix = data.channel_priority_matrix;
+  const channels = [...new Set(matrix.map(x => x.channel))], priorities = ['Critical', 'High', 'Medium', 'Low'];
+  const cell = (channel, priority) => matrix.find(x => x.channel === channel && x.priority === priority);
+  const maxBacklog = Math.max(...matrix.map(x => x.backlog_share)), minBacklog = Math.min(...matrix.map(x => x.backlog_share));
+  const textBest = text.results[0];
+  return <>
+    <section className="metrics diag-kpis">
+      {[
+        ['Tickets não encerrados', pctInt(backlog.share), `${fmt.format(backlog.not_closed)} de ${fmt.format(audit.tickets)}`],
+        ['Críticos sem encerramento', fmt.format(backlog.critical_not_closed), `p=${backlog.priority_chi2_p} · sem diferença significativa`],
+        ['Drivers de CSAT detectados', `${csat.significant_variables.length} de ${csat.variables.length}`, 'Kruskal–Wallis, FDR 5%'],
+        ['Pares de tempo impossíveis', pctInt(audit.resolution_before_first_response_share), 'resolução antes da 1ª resposta'],
+        ['Texto prevê o tipo (D1)', pct(textBest.accuracy), `acaso = ${pct(textBest.chance)}`],
+      ].map(([a, b, c]) => <article key={a}><span>{a}</span><strong>{b}</strong><small>{c}</small></article>)}
+    </section>
+
+    <section className="panel diag-verdict">
+      <p className="eyebrow">LEITURA DO DIAGNÓSTICO</p>
+      <h2>O que os dados sustentam — e o que eles não sustentam</h2>
+      <ul>
+        <li><b>O gargalo real é o backlog, não a velocidade.</b> {pctInt(backlog.share)} dos tickets não estão encerrados ({fmt.format(backlog.pending_customer)} aguardam o cliente) e a taxa em Critical e Low é estatisticamente indistinta (p={backlog.priority_chi2_p}): não há evidência de que a prioridade declarada esteja orientando o atendimento.</li>
+        <li><b>Nenhuma variável observável explica a satisfação.</b> {csat.conclusion} Canal, prioridade, tipo, produto, perfil e tempo não separam clientes satisfeitos de insatisfeitos neste dataset — otimizar “o canal certo” seria ruído.</li>
+        <li><b>O Dataset 1 não carrega sinal textual.</b> Um modelo treinado no próprio texto acerta o tipo do ticket no nível do acaso; a recuperação de casos similares também. A automação por texto é validada no Dataset 2 ({pct(data.model_metrics.accuracy)} de acurácia) e entra no Dataset 1 sempre com revisão humana.</li>
+        <li><b>Decisão de produto:</b> o índice de risco é uma <i>regra de política</i> transparente, não um modelo ajustado. Pesos fixos, fatores visíveis e auditáveis por ticket.</li>
+      </ul>
+    </section>
+
+    <section className="grid two">
+      <article className="panel">
+        <h2>Backlog por prioridade</h2>
+        <p>Parcela de tickets não encerrados (Open + Pending customer).</p>
+        {backlog.by_priority.sort((a, b) => ['Critical', 'High', 'Medium', 'Low'].indexOf(a.name) - ['Critical', 'High', 'Medium', 'Low'].indexOf(b.name)).map(x =>
+          <div className="diag-row" key={x.name}><span>{x.name}</span><MiniBar value={x.share} color={x.name === 'Critical' ? '#ef4444' : '#79e4c2'}/><b>{pctInt(x.share)}</b><small>{fmt.format(x.not_closed)}/{fmt.format(x.tickets)}</small></div>)}
+        <h2 style={{marginTop: 22}}>Backlog por tipo</h2>
+        {backlog.by_type.map(x => <div className="diag-row" key={x.name}><span>{x.name}</span><MiniBar value={x.share}/><b>{pctInt(x.share)}</b><small>{fmt.format(x.not_closed)}/{fmt.format(x.tickets)}</small></div>)}
+      </article>
+      <article className="panel">
+        <h2>Canal × prioridade — backlog</h2>
+        <p>Mapa de calor da parcela não encerrada. Diferenças entre células ficam dentro do ruído amostral (n≈500 por célula).</p>
+        <div className="heat" style={{gridTemplateColumns: `90px repeat(${priorities.length}, 1fr)`}}>
+          <span/>{priorities.map(p => <b key={p}>{p}</b>)}
+          {channels.map(ch => <React.Fragment key={ch}><b>{ch}</b>{priorities.map(pr => {
+            const c = cell(ch, pr), t = (c.backlog_share - minBacklog) / Math.max(maxBacklog - minBacklog, 0.001);
+            return <span key={pr} className="heat-cell" style={{background: `rgba(239,68,68,${0.15 + t * 0.45})`}} title={`${c.tickets} tickets`}>{pctInt(c.backlog_share)}</span>;
+          })}</React.Fragment>)}
+        </div>
+      </article>
+    </section>
+
+    <section className="panel">
+      <h2>O que influencia a satisfação (CSAT)?</h2>
+      <p>{csat.method} Base: {fmt.format(csat.n)} tickets encerrados, CSAT médio {csat.mean_csat}/5. Spearman tempo × CSAT: ρ={csat.resolution_spearman.rho} (p={csat.resolution_spearman.p_value}, n={fmt.format(csat.resolution_spearman.n)}).</p>
+      <div className="table compact diag-table">
+        <div className="table-head"><span>Variável</span><span>n</span><span>p</span><span>p ajustado</span><span>Efeito ε²</span><span>Resultado</span></div>
+        {csat.variables.map(v => <div className="ticket-row" key={v.variable}>
+          <span><b>{v.variable}</b><small>{v.segments.length ? `${v.segments[0].segment} ${v.segments[0].csat} → ${v.segments[v.segments.length - 1].segment} ${v.segments[v.segments.length - 1].csat}` : ''}</small></span>
+          <span>{fmt.format(v.n)}</span><span>{v.p_value}</span><span>{v.p_adjusted}</span><span>{v.effect_size}</span>
+          <span className={v.significant ? 'metric-good' : 'metric-warn'}>{v.significant ? 'Significativo' : 'Sem efeito detectável'}</span>
+        </div>)}
+      </div>
+      <p className="warning">Implicação: não existe alavanca comprovada sobre o CSAT nestes dados. A proposta mede resultado (CSAT, reabertura, backlog) em piloto controlado em vez de prometer ganho de satisfação.</p>
+    </section>
+
+    <section className="grid two">
+      <article className="panel">
+        <h2>Auditoria de qualidade dos dados</h2>
+        {[
+          ['Pares de timestamps', fmt.format(audit.timestamp_pairs)],
+          ['Resolução antes da 1ª resposta', `${fmt.format(audit.resolution_before_first_response)} (${pctInt(audit.resolution_before_first_response_share)})`],
+          ['Clientes com um único ticket', pctInt(audit.single_ticket_customers_share)],
+          ['Descrições com placeholder não preenchido', fmt.format(audit.unfilled_template_placeholders)],
+          ['Cobertura de CSAT (encerrados)', pctInt(audit.csat_coverage_closed)],
+        ].map(([a, b]) => <div className="factor" key={a}><span>{a}</span><b className="neutral">{b}</b></div>)}
+        <ul className="diag-list">{audit.findings.map(f => <li key={f}>{f}</li>)}</ul>
+      </article>
+      <article className="panel">
+        <h2>Prova de sinal: onde o texto funciona</h2>
+        <p>Cada experimento é avaliado em dados não vistos e comparado ao acaso.</p>
+        {text.results.map(r => <div className="diag-row" key={r.target}><span>D1 · prever {r.target.toLowerCase()}</span><MiniBar value={r.accuracy}/><b>{pct(r.accuracy)}</b><small>acaso {pct(r.chance)}</small></div>)}
+        <div className="diag-row"><span>D1 · casos similares (mesmo assunto)</span><MiniBar value={retrieval.dataset1.precision_at_k}/><b>{pct(retrieval.dataset1.precision_at_k)}</b><small>acaso {pct(retrieval.dataset1.chance)}</small></div>
+        <div className="diag-row strong"><span>D2 · classificar 8 categorias</span><MiniBar value={data.model_metrics.accuracy}/><b>{pct(data.model_metrics.accuracy)}</b><small>acaso ≈ 19%</small></div>
+        <div className="diag-row strong"><span>D2 · casos similares (mesma categoria)</span><MiniBar value={retrieval.dataset2.precision_at_k}/><b>{pct(retrieval.dataset2.precision_at_k)}</b><small>acaso {pct(retrieval.dataset2.chance)}</small></div>
+        <p className="similar-intro">{retrieval.conclusion}</p>
+      </article>
+    </section>
+  </>;
+}
+
+function ThresholdCurve({metrics}) {
+  const curve = metrics?.threshold_curve;
+  if (!curve) return null;
+  const chosen = curve.find(r => r.threshold === REVIEW_THRESHOLD), strict = curve.find(r => r.threshold === 0.7);
+  return <section className="panel">
+    <h2>Por que o limiar de revisão é {pctInt(REVIEW_THRESHOLD)}</h2>
+    <p>Em tickets nunca vistos: quanto do volume é roteado sem humano e com qual acurácia. Acima do limiar o ticket segue automático; abaixo, vai à Mesa de Triagem.</p>
+    <div className="table compact diag-table">
+      <div className="table-head"><span>Limiar</span><span>Roteado automático</span><span>Acurácia do automático</span><span>Vai para humano</span><span/><span/></div>
+      {curve.filter(r => r.threshold > 0).map(r => <div className={`ticket-row ${r.threshold === REVIEW_THRESHOLD ? 'row-selected' : ''}`} key={r.threshold}>
+        <span><b>≥ {pctInt(r.threshold)}</b>{r.threshold === REVIEW_THRESHOLD && <small>escolhido</small>}</span>
+        <span>{pct(r.coverage)}</span><span>{r.accuracy === null ? '—' : pct(r.accuracy)}</span><span>{pct(r.sent_to_review)}</span><span/><span/>
+      </div>)}
+    </div>
+    <p className="similar-intro">Sem limiar, a acurácia é {pct(curve[0].accuracy)}. Em {pctInt(REVIEW_THRESHOLD)} o automático atinge {pct(chosen.accuracy)} cobrindo {pct(chosen.coverage)} do volume; em 70% a acurácia sobe para {pct(strict.accuracy)}, mas só {pct(strict.coverage)} do volume ficaria automático.</p>
+  </section>;
 }
 
 /* ─── Validação de Retenção ─── */
@@ -708,6 +832,14 @@ function Churn({data}) {
         </div>
       )}
     </div>
+    {c.tests && <>
+      <h3 style={{marginTop: 22}}>Churnadas × retidas: há diferença no suporte?</h3>
+      <div className="table compact diag-table">
+        <div className="table-head"><span>Métrica</span><span>Churnadas</span><span>Retidas</span><span>p</span><span>p ajustado</span><span>Resultado</span></div>
+        {c.tests.map(t => <div className="ticket-row" key={t.metric}><span><b>{t.metric}</b></span><span>{t.churned}</span><span>{t.retained}</span><span>{t.p_value}</span><span>{t.p_adjusted}</span><span className={t.significant ? 'metric-good' : 'metric-warn'}>{t.significant ? 'Significativo' : 'Sem diferença'}</span></div>)}
+      </div>
+      <p className="warning">{c.verdict}</p>
+    </>}
     <p className="warning">Limitação: {c.limitation}</p>
   </section>;
 }

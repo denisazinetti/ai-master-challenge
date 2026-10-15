@@ -36,27 +36,28 @@ escrita e triagem pelo agente, não ao tempo total do ticket — premissa separa
 
 | Cenário | Taxa de assistência | Minutos poupados/ticket | Horas liberadas/mês* | Valor de capacidade/ano* |
 |---|---|---|---|---|
-| **Conservador** | 20 % | 3 min | *calculado no build* | *calculado no build* |
-| **Base** | 35 % | 6 min | *calculado no build* | *calculado no build* |
-| **Ambicioso** | 50 % | 9 min | *calculado no build* | *calculado no build* |
+| **Conservador** | 20 % | 3 min | 2,9 h (dataset) · 10,1 h (30 mil/ano) | US$ 616 · US$ 2.182 |
+| **Base** | 35 % | 6 min | 10,0 h (dataset) · 35,4 h (30 mil/ano) | US$ 2.155 · US$ 7.636 |
+| **Ambicioso** | 50 % | 9 min | 21,4 h (dataset) · 75,8 h (30 mil/ano) | US$ 4.617 · US$ 16.362 |
 
-> Os valores numéricos finais são computados em tempo de build pelo `prepare_data.py`
-> e exibidos na aba **Visão executiva → ROI por cenário**. Isso garante que os números
-> reflitam o volume real do dataset, e não estimativas manuais.
+> Os valores são computados no build pelo `prepare_data.py` (aba **Visão executiva → ROI por cenário**) em dois volumes:
+> o do arquivo (8.469 tickets, tratados como 1 ano) e o do briefing (~30.000 tickets/ano). Os dois são exibidos porque o ganho
+> escala linearmente com o volume e escolher só o maior seria viés. **A conclusão honesta: capacidade liberada é modesta
+> (≈ 425 h/ano no cenário base com 30 mil tickets) e não paga sozinha um projeto grande; o valor está em poder
+> medir, com um piloto barato, o que de fato muda.**
 
-*Exemplo de leitura para o cenário Base com 2.000 tickets elegíveis/mês:*
+*Exemplo de leitura, cenário Base no volume do briefing (1.010 tickets elegíveis/mês = 30.000 × 40,4% ÷ 12):*
 ```
-2.000 × 35% × 6 min ÷ 60 = 70 h/mês → 70 × 12 × US$ 18 = US$ 15.120/ano de capacidade
+1.010 × 35% × 6 min ÷ 60 = 35,4 h/mês → 35,4 × 12 × US$ 18 ≈ US$ 7.636/ano de capacidade
 ```
 
 ---
 
 ## 2. Qualidade de atendimento
 
-A melhoria de SLA e CSAT é uma **meta operacional** apoiada pelas associações observadas nos
-dados — não uma causalidade provada. O Dataset 1 mostra correlação entre tempo de resolução
-acima do P75 e CSAT abaixo de 3, mas a direção causal não é verificável sem experimento
-controlado.
+**Não há evidência de que algum fator operacional mude o CSAT neste dataset.** Em 8 variáveis testadas
+(canal, prioridade, tipo, assunto, produto, gênero, faixa etária e tempo pós-resposta; Kruskal–Wallis com FDR 5%) nenhuma é
+significativa, e Spearman tempo × CSAT é ρ ≈ 0,00. Qualquer promessa de ganho de satisfação seria especulação.
 
 **Não foi atribuído valor financeiro a este eixo** para evitar especulação sem fundamento.
 O indicador de risco operacional (scoring explicável) é o proxy escolhido: sinaliza onde
@@ -66,23 +67,9 @@ a qualidade provavelmente está comprometida, sem prometer o quanto isso vale em
 
 ## 3. Retenção de receita (evidência complementar — Challenge 001)
 
-O Dataset do Challenge 001 permite estimar exposição de ARR nos segmentos com maior fricção
-de suporte. O cálculo é:
+Foi feito o join real de contas, chamados e assinaturas (`account_id`) e testadas cinco métricas de suporte entre contas churnadas e retidas (Mann–Whitney, FDR 5%): tickets por conta, tempo de resolução, primeira resposta, CSAT e escalonamento. **Nenhuma diferença é significativa** (menor p ajustado ≈ 0,52).
 
-```
-ARR em risco (potencial) = ARR das contas com risco alto × taxa de intervenção bem-sucedida
-```
-
-| Parâmetro | Cenários | Nota |
-|---|---|---|
-| Taxa de intervenção bem-sucedida | 1 % / 3 % / 5 % | Conservador → Ambicioso |
-| ARR base de referência | Join por account_id (Challenge 001) | Dados sintéticos; não transferir diretamente ao Dataset 2 |
-
-> **Limitação crítica:** os dados do Challenge 001 são sintéticos e independentes dos tickets
-> do Challenge 002. A associação entre fricção de suporte e churn é **descritiva**, não causal.
-> Este eixo é apresentado como evidência complementar, não como projeção de receita garantida.
-
----
+Consequência para o business case: **nenhum valor de retenção é somado ao ROI.** A premissa “fricção de suporte antecipa churn” não é sustentada por esses dados, e projetar “ARR em risco × taxa de intervenção” criaria um número sem base. A fila de risco existe como política de cuidado com clientes de maior impacto e será avaliada em piloto, não por previsão.
 
 ## 4. O que não está no business case
 

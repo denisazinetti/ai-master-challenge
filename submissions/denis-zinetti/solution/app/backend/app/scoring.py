@@ -11,8 +11,12 @@ class RiskResult:
     factors: list[dict[str, Any]]
 
 
-def calculate_risk(ticket: dict[str, Any], response_p75: float, resolution_p75: float) -> RiskResult:
-    """Operational retention-risk index; it is deliberately not a churn probability."""
+def calculate_risk(ticket: dict[str, Any], resolution_p75: float) -> RiskResult:
+    """Operational retention-risk index; it is deliberately not a churn probability.
+
+    It is a transparent triage rule, not a fitted model: Dataset 1 shows no statistically
+    detectable driver of CSAT (see diagnostics.csat_drivers), so the weights encode business policy.
+    """
     factors: list[dict[str, Any]] = []
     score = 0
     priority_points = {"Critical": 25, "High": 16, "Medium": 8, "Low": 2}
@@ -21,11 +25,6 @@ def calculate_risk(ticket: dict[str, Any], response_p75: float, resolution_p75: 
     score += points
     if points >= 16:
         factors.append({"label": f"Prioridade {priority}", "points": points, "kind": "risk"})
-
-    first_response = float(ticket.get("first_response_hours") or 0)
-    if response_p75 and first_response > response_p75:
-        score += 18
-        factors.append({"label": "Primeira resposta acima do P75", "points": 18, "kind": "risk"})
 
     resolution = float(ticket.get("resolution_hours") or 0)
     if resolution_p75 and resolution > resolution_p75:
@@ -45,10 +44,16 @@ def calculate_risk(ticket: dict[str, Any], response_p75: float, resolution_p75: 
         score += 15
         factors.append({"label": f"Recorrência: {recurrence} tickets", "points": 15, "kind": "risk"})
 
-    if str(ticket.get("status")) != "Closed":
-        score += 8
-        factors.append({"label": "Ticket ainda não encerrado", "points": 8, "kind": "risk"})
+    status = str(ticket.get("status"))
+    if status == "Open":
+        score += 12
+        factors.append({"label": "Aguardando atendimento (Open)", "points": 12, "kind": "risk"})
+    elif status != "Closed":
+        score += 4
+        factors.append({"label": "Aguardando o cliente (Pending)", "points": 4, "kind": "risk"})
 
     score = max(0, min(100, score))
-    level = "Alto" if score >= 55 else "Médio" if score >= 30 else "Baixo"
+    # Open tickets carry no CSAT or duration, so their ceiling is priority + status + recurrence (52).
+    # Thresholds are set so that "Alto" is reachable by them: a Critical ticket waiting on us scores 37.
+    level = "Alto" if score >= 37 else "Médio" if score >= 22 else "Baixo"
     return RiskResult(score=score, level=level, factors=factors)
