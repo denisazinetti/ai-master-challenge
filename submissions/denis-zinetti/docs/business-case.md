@@ -59,8 +59,8 @@ A aba Diagnóstico estima o desperdício em três fontes, sempre rotuladas como 
 
 ## 2. Qualidade de atendimento
 
-**Não há evidência de que algum fator operacional mude o CSAT neste dataset.** Em 8 variáveis testadas
-(canal, prioridade, tipo, assunto, produto, gênero, faixa etária e tempo pós-resposta; Kruskal–Wallis com FDR 5%) nenhuma é
+**Não há evidência de que algum fator operacional mude o CSAT neste dataset.** Em 9 variáveis testadas
+(canal, prioridade, tipo, assunto, produto, gênero, faixa etária, idade do produto e tempo pós-resposta; Kruskal–Wallis com FDR 5%) nenhuma é
 significativa, e Spearman tempo × CSAT é ρ ≈ 0,00. Qualquer promessa de ganho de satisfação seria especulação.
 
 **Não foi atribuído valor financeiro a este eixo** para evitar especulação sem fundamento.

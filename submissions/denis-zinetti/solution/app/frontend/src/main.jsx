@@ -880,6 +880,12 @@ function Churn({data}) {
       </div>
       <p className="warning">{c.verdict}</p>
     </>}
+    {c.churn_reasons && <>
+      <h3 style={{marginTop: 22}}>Motivo declarado de churn</h3>
+      <p>{c.churn_reasons.note}</p>
+      {c.churn_reasons.by_reason.map(x => <div className="diag-row" key={x.reason}><span>{x.reason}</span><MiniBar value={x.share} max={0.25} color={x.reason === 'support' ? '#ef4444' : '#79e4c2'}/><b>{pctInt(x.share)}</b><small>{x.events} eventos</small></div>)}
+      <p className="similar-intro">Suporte é citado em {pctInt(c.churn_reasons.by_reason.find(x => x.reason === 'support')?.share ?? 0)} dos eventos e em {c.churn_reasons.support_attributed_accounts} das {c.churn_reasons.churned_accounts} contas churnadas, que somam US$ {fmt.format(c.churn_reasons.support_attributed_arr)} de ARR ({pctInt(c.churn_reasons.support_arr_share)} do ARR perdido). É o teto de exposição. As contas que citam suporte não têm métricas de suporte piores do que as que citam outros motivos (todos p &gt; 0,1): o motivo declarado não coincide com o que os tickets mostram.</p>
+    </>}
     <p className="warning">Limitação: {c.limitation}</p>
   </section>;
 }

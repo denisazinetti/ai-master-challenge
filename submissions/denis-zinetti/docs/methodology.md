@@ -2,6 +2,23 @@
 
 Princípio: antes de propor automação, testar o que cada dataset consegue sustentar. Todos os números abaixo são calculados no build (`prepare_data.py`, `diagnostics.py`), nunca digitados.
 
+## 0. Cobertura: o que foi usado de cada dataset
+
+| Fonte | Colunas | Uso |
+|---|---|---|
+| Dataset 1 (8.469 × 17) | Ticket ID, tipo, assunto, prioridade, canal, status | Fila, backlog, testes de CSAT, regras de roteamento |
+| | Descrição | Classificação com o modelo do D2 (revisão humana) e prova de sinal textual |
+| | Resolução (texto) | Testada como sinal de tipo e de CSAT baixo: **sem sinal**, por isso não alimenta o copiloto |
+| | First Response / Time to Resolution | Intervalo pós-resposta (só pares válidos), P75 do risco, ranking de combinações, espera do cliente |
+| | CSAT | Drivers (Kruskal–Wallis), risco, cobertura |
+| | Idade, gênero, produto, **data da compra** | Variáveis testadas como drivers de CSAT (idade do produto = data da compra até o dia de referência) |
+| | Nome e e-mail | Recorrência por cliente (98% têm um ticket); nome só na interface |
+| Dataset 2 (47.837 × 2) | Document, Topic_group | Classificador (84,45%), curva de limiar, busca de similares (69% vs 19%) |
+| Challenge 001: contas, assinaturas, chamados | todas as colunas usadas nos agregados por conta | Join por `account_id`, ARR, comparação churnadas × retidas |
+| Challenge 001: uso de funcionalidades | eventos e erros por assinatura → conta | 2 métricas de uso no teste churnadas × retidas |
+| Challenge 001: eventos de churn | `reason_code` | Parcela do churn atribuída a suporte e ARR exposto |
+| Challenge 001: eventos de churn | `feedback_text` e demais campos | **Não usados**: texto livre de 3 frases repetidas e fora do escopo do Challenge 002 |
+
 ## 1. Auditoria do Dataset 1 (8.469 tickets)
 
 | Verificação | Resultado | Consequência |
@@ -14,7 +31,7 @@ Princípio: antes de propor automação, testar o que cada dataset consegue sust
 
 ## 2. O que influencia o CSAT?
 
-Kruskal–Wallis para cada variável (canal, prioridade, tipo, assunto, produto, gênero, faixa etária, faixa de tempo pós-resposta), correção de Benjamini–Hochberg (FDR 5%), tamanho de efeito ε² e Spearman para tempo × CSAT. **Nenhuma das 8 variáveis é significativa** (menor p ajustado ≈ 0,89; ρ ≈ 0,00). Conclusão: não há alavanca comprovada sobre o CSAT; a proposta mede resultado em piloto em vez de prometer ganho.
+Kruskal–Wallis para cada variável (canal, prioridade, tipo, assunto, produto, gênero, faixa etária, idade do produto desde a compra, faixa de tempo pós-resposta), correção de Benjamini–Hochberg (FDR 5%), tamanho de efeito ε² e Spearman para tempo × CSAT. **Nenhuma das 9 variáveis é significativa** (menor p ajustado ≈ 0,89; ρ ≈ 0,00). Conclusão: não há alavanca comprovada sobre o CSAT; a proposta mede resultado em piloto em vez de prometer ganho.
 
 ## 3. Onde o fluxo trava?
 
@@ -46,5 +63,7 @@ O limiar de revisão (50%) vem da curva cobertura × acurácia em tickets de tes
 Regra aditiva transparente (prioridade, resolução acima do P75 dos pares válidos, CSAT, recorrência, status). Como o Dataset 1 não tem driver estatístico de CSAT, os pesos são **política operacional**, não parâmetros ajustados — e isso está declarado na interface e no código. Não é probabilidade de churn.
 
 ## 7. Challenge 001 (retenção)
+
+Além de suporte, foram testadas duas métricas de uso do produto. Suporte é o motivo declarado em 17% dos eventos de churn e 18% do ARR perdido (US$ 5,1 mi de 28,3 mi): é o teto de exposição, mas as contas que citam suporte não têm métricas de suporte piores do que as que citam outros motivos (p > 0,1).
 
 Join real por `account_id` entre contas, chamados e assinaturas. Teste de Mann–Whitney (FDR 5%) entre contas churnadas e retidas: tickets por conta, resolução, primeira resposta, CSAT e escalonamento **não diferem significativamente**. A hipótese “fricção de suporte antecipa churn” **não é sustentada** por esse dataset; ele é apresentado como evidência negativa, e nenhuma projeção de receita em risco é feita a partir dele.

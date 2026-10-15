@@ -94,13 +94,16 @@ def csat_drivers(support: pd.DataFrame) -> dict[str, Any]:
     closed = closed.dropna(subset=["csat"])
     closed["resolution_hours"] = [duration_hours(a, b) for a, b in zip(closed["First Response Time"], closed["Time to Resolution"])]
     closed["age_band"] = pd.cut(closed["Customer Age"], [0, 25, 35, 45, 55, 120], labels=["≤25", "26–35", "36–45", "46–55", "56+"])
+    reference_day = pd.to_datetime(support["First Response Time"], errors="coerce").max().normalize()
+    closed["product_age_days"] = (reference_day - pd.to_datetime(closed["Date of Purchase"], errors="coerce")).dt.days
+    closed["product_age_band"] = pd.qcut(closed["product_age_days"], 4, labels=["Compra mais recente", "2º quartil", "3º quartil", "Compra mais antiga"])
     valid = closed["resolution_hours"].notna()
     closed["resolution_band"] = pd.cut(closed["resolution_hours"], [-0.01, 4, 8, 12, 24], labels=["≤4h", "4–8h", "8–12h", "12–24h"])
 
     variables = [
         ("Canal", "Ticket Channel"), ("Prioridade", "Ticket Priority"), ("Tipo de ticket", "Ticket Type"),
         ("Assunto", "Ticket Subject"), ("Produto", "Product Purchased"), ("Gênero", "Customer Gender"),
-        ("Faixa etária", "age_band"), ("Tempo pós-1ª resposta", "resolution_band"),
+        ("Faixa etária", "age_band"), ("Idade do produto", "product_age_band"), ("Tempo pós-1ª resposta", "resolution_band"),
     ]
     results, p_values = [], []
     for label, column in variables:
@@ -177,9 +180,20 @@ def text_signal_check(support: pd.DataFrame) -> dict[str, Any]:
         accuracy = float((clf.predict(vec.transform(x_test)) == y_test).mean())
         results.append({"target": label, "classes": int(y.nunique()), "accuracy": round(accuracy, 3), "chance": round(1 / y.nunique(), 3),
                         "majority_baseline": round(float(y_test.value_counts(normalize=True).iloc[0]), 3)})
+    # The agent-written Resolution text exists only for closed tickets. Does it carry signal about type or satisfaction?
+    closed = support[(support["Ticket Status"] == "Closed") & support["Resolution"].notna()]
+    resolution_text = closed["Resolution"].astype(str)
+    csat_low = (pd.to_numeric(closed["Customer Satisfaction Rating"], errors="coerce") <= 2).astype(int)
+    for label, y in (("Tipo (via texto da resolução)", closed["Ticket Type"].astype(str)), ("CSAT baixo ≤2 (via texto da resolução)", csat_low)):
+        x_train, x_test, y_train, y_test = train_test_split(resolution_text, y, test_size=.25, random_state=42, stratify=y)
+        vec = TfidfVectorizer(ngram_range=(1, 2), min_df=2, sublinear_tf=True)
+        clf = LogisticRegression(max_iter=300).fit(vec.fit_transform(x_train), y_train)
+        accuracy = float((clf.predict(vec.transform(x_test)) == y_test).mean())
+        results.append({"target": label, "classes": int(y.nunique()), "accuracy": round(accuracy, 3), "chance": round(1 / y.nunique(), 3),
+                        "majority_baseline": round(float(y_test.value_counts(normalize=True).iloc[0]), 3)})
     return {"results": results,
-            "conclusion": "O texto do Dataset 1 prevê o próprio tipo/assunto apenas no nível do acaso: ele não carrega sinal de categoria. "
-                          "A classificação por texto é validada no Dataset 2; no Dataset 1 ela é usada com revisão humana obrigatória."}
+            "conclusion": "Nem a descrição nem o texto da resolução do Dataset 1 superam o acaso (ou a classe majoritária) ao prever tipo, assunto ou CSAT: o texto não carrega sinal de categoria. "
+                          "A classificação por texto é validada no Dataset 2; no Dataset 1 ela é usada com revisão humana obrigatória, e o texto da resolução não alimenta o copiloto."}
 
 
 def confidence_threshold_curve(y_true: pd.Series, probabilities: np.ndarray, classes: np.ndarray) -> list[dict[str, Any]]:

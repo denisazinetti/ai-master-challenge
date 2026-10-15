@@ -13,6 +13,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
 from sklearn.model_selection import train_test_split
+from sklearn.base import clone
 from sklearn.pipeline import Pipeline
 
 from app import diagnostics
@@ -50,7 +51,10 @@ def train_classifier(path: Path) -> tuple[dict, Pipeline]:
     report = classification_report(y_test, predictions, output_dict=True, zero_division=0)
     labels = sorted(df.Topic_group.unique())
     metrics = {"algorithm": "TF-IDF (1–2 grams) + regressão logística (SGD)", "train_rows": int(len(x_train)), "test_rows": int(len(x_test)), "accuracy": round(float(accuracy_score(y_test, predictions)), 4), "macro_f1": round(float(f1_score(y_test, predictions, average="macro")), 4), "by_category": {label: {"precision": round(report[label]["precision"], 3), "recall": round(report[label]["recall"], 3), "f1": round(report[label]["f1-score"], 3)} for label in labels}, "labels": labels, "confusion_matrix": confusion_matrix(y_test, predictions, labels=labels).tolist(), "threshold_curve": diagnostics.confidence_threshold_curve(y_test, test_probabilities, model.named_steps["classifier"].classes_), "note": "O modelo foi validado no Dataset 2. As sugestões nos tickets do Dataset 1 são experimentais e exigem revisão humana."}
-    return metrics, model
+    # Honest numbers come from the hold-out split above; the model that serves requests is refit on every labelled row.
+    production = clone(model).fit(df.Document.astype(str), df.Topic_group.astype(str))
+    metrics["production_fit_rows"] = int(len(df))
+    return metrics, production
 
 
 def churn_validation(churn_dir: Path) -> dict:
@@ -59,10 +63,12 @@ def churn_validation(churn_dir: Path) -> dict:
     tickets = pd.read_csv(churn_dir / "ravenstack_support_tickets.csv")
     account_ticket = tickets.groupby("account_id").agg(ticket_count=("ticket_id", "count"), avg_resolution=("resolution_time_hours", "mean"), avg_first_response=("first_response_time_minutes", "mean"), avg_satisfaction=("satisfaction_score", "mean"), escalation_rate=("escalation_flag", "mean")).reset_index()
     revenue = subscriptions.groupby("account_id").agg(arr=("arr_amount", "sum")).reset_index()
-    merged = accounts.merge(account_ticket, on="account_id", how="left").merge(revenue, on="account_id", how="left").fillna({"ticket_count": 0, "arr": 0})
+    usage = pd.read_csv(churn_dir / "ravenstack_feature_usage.csv").merge(subscriptions[["subscription_id", "account_id"]], on="subscription_id", how="left")
+    account_usage = usage.groupby("account_id").agg(usage_events=("usage_id", "count"), usage_errors=("error_count", "sum")).reset_index()
+    merged = accounts.merge(account_ticket, on="account_id", how="left").merge(revenue, on="account_id", how="left").merge(account_usage, on="account_id", how="left").fillna({"ticket_count": 0, "arr": 0, "usage_events": 0, "usage_errors": 0})
     grouped = merged.groupby("churn_flag").agg(accounts=("account_id", "count"), tickets_per_account=("ticket_count", "mean"), resolution_hours=("avg_resolution", "mean"), first_response_minutes=("avg_first_response", "mean"), satisfaction=("avg_satisfaction", "mean"), escalation_rate=("escalation_rate", "mean"), arr=("arr", "sum")).round(2).reset_index()
     tests = []
-    for label, column in (("Tickets por conta", "ticket_count"), ("Resolução média (h)", "avg_resolution"), ("1ª resposta média (min)", "avg_first_response"), ("CSAT médio", "avg_satisfaction"), ("Taxa de escalonamento", "escalation_rate")):
+    for label, column in (("Tickets por conta", "ticket_count"), ("Resolução média (h)", "avg_resolution"), ("1ª resposta média (min)", "avg_first_response"), ("CSAT médio", "avg_satisfaction"), ("Taxa de escalonamento", "escalation_rate"), ("Eventos de uso do produto", "usage_events"), ("Erros de uso do produto", "usage_errors")):
         churned, retained = merged.loc[merged.churn_flag == True, column].dropna(), merged.loc[merged.churn_flag == False, column].dropna()
         tests.append({"metric": label, "churned": round(float(churned.mean()), 2), "retained": round(float(retained.mean()), 2), "p_value": round(float(stats.mannwhitneyu(churned, retained).pvalue), 4)})
     adjusted = diagnostics._bh_adjust([t["p_value"] for t in tests])
@@ -71,7 +77,22 @@ def churn_validation(churn_dir: Path) -> dict:
         test["significant"] = bool(p_adj < diagnostics.ALPHA)
     verdict = ("Churnadas e retidas têm perfil de suporte estatisticamente indistinguível (Mann–Whitney, FDR 5%): a hipótese de que fricção de suporte antecipa churn NÃO é sustentada por este dataset."
                if not any(t["significant"] for t in tests) else "Há diferenças significativas entre churnadas e retidas: " + ", ".join(t["metric"] for t in tests if t["significant"]) + ".")
-    return {"method": "Join por account_id entre contas, chamados e assinaturas do Challenge 001.", "comparison": grouped.to_dict(orient="records"), "tests": tests, "verdict": verdict, "limitation": "Associações entre suporte e churn neste dataset sintético não demonstram causalidade e não são transferidas para os tickets do Challenge 002."}
+    # Declared churn reasons: how much churn is attributed to support by the customers themselves?
+    events = pd.read_csv(churn_dir / "ravenstack_churn_events.csv")
+    reasons = events.reason_code.value_counts()
+    churned = merged[merged.churn_flag == True]
+    support_accounts = set(events.loc[events.reason_code == "support", "account_id"]) & set(churned.account_id)
+    support_arr = float(churned.loc[churned.account_id.isin(support_accounts), "arr"].sum())
+    others = churned[~churned.account_id.isin(support_accounts)]
+    reason_tests = []
+    for label, column in (("Resolução média (h)", "avg_resolution"), ("1ª resposta média (min)", "avg_first_response"), ("CSAT médio", "avg_satisfaction"), ("Tickets por conta", "ticket_count")):
+        a, b = churned.loc[churned.account_id.isin(support_accounts), column].dropna(), others[column].dropna()
+        reason_tests.append({"metric": label, "support_reason": round(float(a.mean()), 2), "other_reasons": round(float(b.mean()), 2), "p_value": round(float(stats.mannwhitneyu(a, b).pvalue), 4)})
+    churn_reasons = {"events": int(len(events)), "by_reason": [{"reason": str(k), "events": int(v), "share": round(float(v / len(events)), 3)} for k, v in reasons.items()],
+                     "support_attributed_accounts": len(support_accounts), "churned_accounts": int(len(churned)), "support_attributed_arr": round(support_arr), "churned_arr": round(float(churned.arr.sum())),
+                     "support_arr_share": round(support_arr / max(float(churned.arr.sum()), 1), 3), "tests_vs_other_reasons": reason_tests,
+                     "note": "Motivo declarado pelo cliente (reason_code). Mede o teto de exposição a suporte, não o ganho de uma intervenção."}
+    return {"method": "Join por account_id entre contas, chamados, assinaturas, uso de funcionalidades e eventos de churn do Challenge 001.", "comparison": grouped.to_dict(orient="records"), "tests": tests, "verdict": verdict, "churn_reasons": churn_reasons, "limitation": "Associações entre suporte e churn neste dataset sintético não demonstram causalidade e não são transferidas para os tickets do Challenge 002."}
 
 
 def main() -> None:
