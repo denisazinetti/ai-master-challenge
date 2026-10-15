@@ -1,20 +1,20 @@
 services:
-  signaldesk:
+  g4desk:
     networks:
       - default
       - traefik
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=${TRAEFIK_NETWORK}"
-      - "traefik.http.routers.signaldesk.rule=Host(`${APP_HOST}`)"
-      - "traefik.http.routers.signaldesk.entrypoints=websecure"
-      - "traefik.http.routers.signaldesk.tls=true"
-      - "traefik.http.routers.signaldesk.tls.certresolver=${TRAEFIK_CERTRESOLVER}"
-      - "traefik.http.services.signaldesk.loadbalancer.server.port=8000"
-      - "traefik.http.routers.signaldesk-http.rule=Host(`${APP_HOST}`)"
-      - "traefik.http.routers.signaldesk-http.entrypoints=web"
-      - "traefik.http.routers.signaldesk-http.middlewares=signaldesk-https"
-      - "traefik.http.middlewares.signaldesk-https.redirectscheme.scheme=https"
+      - "traefik.http.routers.g4desk.rule=Host(`${APP_HOST}`)"
+      - "traefik.http.routers.g4desk.entrypoints=websecure"
+      - "traefik.http.routers.g4desk.tls=true"
+      - "traefik.http.routers.g4desk.tls.certresolver=${TRAEFIK_CERTRESOLVER}"
+      - "traefik.http.services.g4desk.loadbalancer.server.port=8000"
+      - "traefik.http.routers.g4desk-http.rule=Host(`${APP_HOST}`)"
+      - "traefik.http.routers.g4desk-http.entrypoints=web"
+      - "traefik.http.routers.g4desk-http.middlewares=g4desk-https"
+      - "traefik.http.middlewares.g4desk-https.redirectscheme.scheme=https"
 networks:
   traefik:
     external: true

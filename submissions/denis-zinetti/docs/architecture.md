@@ -1,6 +1,6 @@
 # Arquitetura
 
-O SignalDesk é um monólito intencionalmente simples: React compilado é servido pelo FastAPI, que entrega dados preparados, classificação e o endpoint opcional de LLM. Um único container reduz configuração para quem avalia e mantém o deploy em VPS previsível.
+O G4Desk é um monólito intencionalmente simples: React compilado é servido pelo FastAPI, que entrega dados preparados, classificação e o endpoint opcional de LLM. Um único container reduz configuração para quem avalia e mantém o deploy em VPS previsível.
 
 ```text
 CSVs públicos → prepare_data.py → dashboard.json → FastAPI → React

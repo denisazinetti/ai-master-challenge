@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +17,23 @@ from sklearn.pipeline import Pipeline
 from app.scoring import calculate_risk
 
 OUT = Path(__file__).resolve().parent / "data"
+
+
+def normalized_subject(subject: object) -> str:
+    """Use the stable issue theme, not noisy free-text resolutions, for grouping."""
+    return " ".join(re.findall(r"[a-z0-9]+", str(subject).lower()))
+
+
+def response_playbook(item: dict) -> dict[str, str]:
+    category = item["classification"]["category"]
+    ticket_type = item["ticket_type"]
+    if ticket_type == "Technical issue":
+        instructions = "Confirme o sintoma e o impacto, informe a próxima verificação técnica e peça confirmação após a ação."
+    elif ticket_type in {"Product inquiry", "Cancellation request"}:
+        instructions = "Confirme a necessidade, apresente a orientação aplicável e peça a informação mínima necessária para concluir o atendimento."
+    else:
+        instructions = "Reconheça a solicitação, confirme os dados relevantes e informe o próximo passo sem prometer compensação, prazo ou mudança de cobrança."
+    return {"title": f"Padrão de resposta · {category}", "instructions": instructions}
 
 
 def post_response_hours(first_response: object, resolution: object) -> float:
@@ -78,21 +96,58 @@ def main() -> None:
         best = int(np.argmax(probability))
         item["classification"] = {"category": str(classes[best]), "confidence": round(float(probability[best]), 3), "needs_review": bool(probability[best] < .70)}
     rows.sort(key=lambda x: (-x["risk"]["score"], -x["resolution_hours"]))
-    closed_by_type: dict[str, list[dict]] = {}
+    closed_by_pattern: dict[tuple[str, str], list[dict]] = {}
     for candidate in rows:
-        if candidate["status"] == "Closed" and candidate["resolution"]:
-            closed_by_type.setdefault(candidate["ticket_type"], []).append(candidate)
-    # Retrieval is precomputed only for the visible high-priority workbench. This
-    # keeps the demo fast without pretending that every historical ticket needs AI.
-    retrieval_ids = {item["id"] for item in rows[:500]}
+        if candidate["status"] == "Closed":
+            key = (candidate["ticket_type"], normalized_subject(candidate["subject"]))
+            closed_by_pattern.setdefault(key, []).append(candidate)
+
     for item in rows:
-        if item["id"] not in retrieval_ids:
-            item["similar"] = []
-            continue
-        needle = set(str(item["description"]).lower().split())
-        candidates = closed_by_type.get(item["ticket_type"], [])[:1000]
-        scored = sorted(((len(needle & set(str(other["description"]).lower().split())), other) for other in candidates if other["id"] != item["id"]), key=lambda x: x[0], reverse=True)
-        item["similar"] = [{"id": other["id"], "subject": other["subject"], "resolution": other["resolution"], "similarity": score} for score, other in scored[:3] if score > 0]
+        key = (item["ticket_type"], normalized_subject(item["subject"]))
+        candidates = [candidate for candidate in closed_by_pattern.get(key, []) if candidate["id"] != item["id"]]
+        item["similar"] = [
+            {"id": candidate["id"], "subject": candidate["subject"], "pattern": "Mesmo tipo e tema do chamado"}
+            for candidate in candidates[:3]
+        ]
+        item["response_playbook"] = response_playbook(item)
+
+    open_items = [item for item in rows if item["status"] != "Closed"]
+    bottleneck_groups: dict[tuple[str, str], list[dict]] = {}
+    for item in open_items:
+        bottleneck_groups.setdefault((item["ticket_type"], item["subject"]), []).append(item)
+    bottlenecks = []
+    for (ticket_type, subject), grouped_items in bottleneck_groups.items():
+        high_risk = sum(item["risk"]["level"] == "Alto" for item in grouped_items)
+        critical = sum(item["priority"] == "Critical" for item in grouped_items)
+        count = len(grouped_items)
+        if critical or high_risk:
+            action = "Priorizar na fila e definir responsável."
+        elif count >= 3:
+            action = "Criar macro e revisar causa raiz."
+        else:
+            action = "Monitorar recorrência antes de padronizar."
+        bottlenecks.append({
+            "subject": subject,
+            "ticket_type": ticket_type,
+            "open_tickets": count,
+            "high_risk": high_risk,
+            "critical": critical,
+            "avg_resolution_hours": round(float(np.mean([item["resolution_hours"] for item in grouped_items])), 1),
+            "action": action,
+        })
+    bottlenecks.sort(key=lambda item: (-item["critical"], -item["high_risk"], -item["open_tickets"], -item["avg_resolution_hours"]))
+    risk_distribution = [{"name": level, "value": sum(item["risk"]["level"] == level for item in open_items)} for level in ("Alto", "Médio", "Baixo")]
+    triage_insights = {
+        "scope": "Tickets ainda não encerrados",
+        "open_tickets": len(open_items),
+        "high_risk": sum(item["risk"]["level"] == "Alto" for item in open_items),
+        "critical": sum(item["priority"] == "Critical" for item in open_items),
+        "recurring_themes": sum(item["open_tickets"] >= 3 for item in bottlenecks),
+        "risk_distribution": risk_distribution,
+        "bottlenecks": bottlenecks[:5],
+        "source_note": "Leitura operacional do dataset de demonstração; valide os temas com dados de produção antes de alterar processos ou capacidade.",
+        "limitation": "O dataset não informa a abertura do ticket; por isso não há tendência temporal ou SLA de primeira resposta nesta visão.",
+    }
     risk_counts = pd.Series([x["risk"]["level"] for x in rows]).value_counts().to_dict()
     priority_group = support.groupby(["Ticket Channel", "Ticket Priority"], dropna=False).agg(tickets=("Ticket ID", "count"), avg_resolution_hours=("resolution_hours", "mean"), csat=("satisfaction", "mean")).round(2).reset_index().sort_values("avg_resolution_hours", ascending=False).head(8)
     avg_resolution = float(support.resolution_hours.mean())
@@ -107,7 +162,7 @@ def main() -> None:
     insights = [{"title": "Fila lenta", "detail": f"{above_p75:,} tickets superam {resolution_p75:.1f}h entre primeira resposta e resolução (P75).", "action": "Priorizar roteamento e resposta assistida nessa cauda."}, {"title": "Automação com limite", "detail": f"{eligible:,} tickets de baixa/média prioridade não financeiros são elegíveis para assistência.", "action": "Manter billing, críticos e baixa confiança sob revisão humana."}, {"title": "Retenção antes do cancelamento", "detail": f"{risk_counts.get('Alto', 0):,} tickets concentram sinais operacionais de risco alto.", "action": "Acionar playbook de CS com contexto do chamado."}]
     OUT.mkdir(parents=True, exist_ok=True)
     joblib.dump(classifier, OUT / "classifier.joblib")
-    output = {"ready": True, "overview": overview, "tickets": rows, "priority_breakdown": priority_group.to_dict(orient="records"), "insights": insights, "roi": roi, "churn_validation": churn_validation(args.churn_dir), "model_metrics": model_metrics}
+    output = {"ready": True, "overview": overview, "tickets": rows, "priority_breakdown": priority_group.to_dict(orient="records"), "insights": insights, "roi": roi, "churn_validation": churn_validation(args.churn_dir), "model_metrics": model_metrics, "triage_insights": triage_insights}
     (OUT / "dashboard.json").write_text(json.dumps(output, ensure_ascii=False), encoding="utf-8")
     print(f"Generated {OUT / 'dashboard.json'} with {len(rows)} tickets")
 

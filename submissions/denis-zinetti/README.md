@@ -10,7 +10,7 @@
 
 ## Executive Summary
 
-Construí o **SignalDesk**, uma central de inteligência operacional que usa chamados para priorizar trabalho de suporte e acionar prevenção de retenção antes do cancelamento. A solução combina diagnóstico de gargalos com um classificador NLP avaliado em 47 mil tickets, um índice explicável de risco operacional e um copiloto de resposta que mantém aprovação humana. O resultado é uma rotina que o diretor pode acompanhar por ROI e o agente pode usar no ticket seguinte — não um dashboard desconectado da operação.
+Construí o **G4Desk**, uma central de inteligência operacional que usa chamados para priorizar trabalho de suporte e acionar prevenção de retenção antes do cancelamento. A solução combina diagnóstico de gargalos com um classificador NLP avaliado em 47 mil tickets, um índice explicável de risco operacional e um copiloto de resposta que mantém aprovação humana. O resultado é uma rotina que o diretor pode acompanhar por ROI e o agente pode usar no ticket seguinte — não um dashboard desconectado da operação.
 
 ---
 
@@ -37,6 +37,10 @@ Construí o **SignalDesk**, uma central de inteligência operacional que usa cha
 1. Assistir primeiro tickets de baixa/média prioridade não financeiros: o ganho é de velocidade com risco operacional controlado.
 2. Criar uma fila de risco alto para suporte + CS, com playbook em até um dia útil.
 3. Não automatizar cobrança, tickets críticos, baixa confiança do classificador ou exceções: esses casos devem permanecer humanos.
+
+### Proposta de automação com IA
+
+A esteira de automação foi construída com guardrails rigorosos fundamentados nos dados. O fluxo divide os chamados entre automação zero-touch, assistência por copiloto e intervenção humana obrigatória (billing, críticos e risco de churn). Detalhes completos em [automation-proposal.md](docs/automation-proposal.md).
 
 ### ROI e limitações
 
