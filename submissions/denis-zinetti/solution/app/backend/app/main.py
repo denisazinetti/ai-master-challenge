@@ -125,7 +125,7 @@ def health() -> dict[str, str]:
 @app.get("/api/overview")
 def overview() -> dict[str, Any]:
     data = load_data()
-    return {key: data.get(key) for key in ("ready", "message", "overview", "insights", "roi", "churn_validation", "model_metrics", "triage_insights", "data_audit", "csat_drivers", "backlog", "channel_priority_matrix", "text_signal_check", "retrieval_eval")}
+    return {key: data.get(key) for key in ("ready", "message", "overview", "insights", "roi", "churn_validation", "model_metrics", "triage_insights", "data_audit", "csat_drivers", "backlog", "channel_priority_matrix", "text_signal_check", "retrieval_eval", "waste", "combination_ranking")}
 
 
 def compute_queue(item: dict[str, Any]) -> str:

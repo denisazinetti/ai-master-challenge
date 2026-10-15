@@ -176,10 +176,12 @@ def main() -> None:
         "dataset1": {**diagnostics.SimilarCaseIndex(support_closed["Ticket Description"], support_closed["Ticket Subject"]).leave_one_out(), "target": "mesmo Ticket Subject"},
         "conclusion": "A recuperação de casos similares funciona no texto do Dataset 2 e fica no nível do acaso no Dataset 1; por isso ela é exposta no classificador (Dataset 2) e não nos tickets do Dataset 1.",
     }
+    auto_coverage = next(row["coverage"] for row in model_metrics["threshold_curve"] if row["threshold"] == diagnostics.REVIEW_THRESHOLD)
+    waste = diagnostics.waste_estimate(support, auto_coverage)
     OUT.mkdir(parents=True, exist_ok=True)
     joblib.dump(diagnostics.SimilarCaseIndex(reference.Document, reference.Topic_group), OUT / "similar_cases.joblib", compress=3)
     joblib.dump(classifier, OUT / "classifier.joblib")
-    output = {"ready": True, "overview": overview, "tickets": rows, "priority_breakdown": priority_group.to_dict(orient="records"), "insights": insights, "roi": roi, "churn_validation": churn_validation(args.churn_dir), "model_metrics": model_metrics, "triage_insights": triage_insights, "data_audit": diagnostics.data_audit(support), "csat_drivers": diagnostics.csat_drivers(support), "backlog": backlog, "channel_priority_matrix": diagnostics.channel_priority_matrix(support), "text_signal_check": diagnostics.text_signal_check(support), "retrieval_eval": retrieval_eval}
+    output = {"ready": True, "overview": overview, "tickets": rows, "priority_breakdown": priority_group.to_dict(orient="records"), "insights": insights, "roi": roi, "churn_validation": churn_validation(args.churn_dir), "model_metrics": model_metrics, "triage_insights": triage_insights, "data_audit": diagnostics.data_audit(support), "csat_drivers": diagnostics.csat_drivers(support), "backlog": backlog, "channel_priority_matrix": diagnostics.channel_priority_matrix(support), "text_signal_check": diagnostics.text_signal_check(support), "retrieval_eval": retrieval_eval, "waste": waste, "combination_ranking": diagnostics.combination_ranking(support)}
     (OUT / "dashboard.json").write_text(json.dumps(output, ensure_ascii=False), encoding="utf-8")
     print(f"Generated {OUT / 'dashboard.json'} with {len(rows)} tickets")
 

@@ -304,7 +304,7 @@ function Triage({tickets, filters, setFilters, openTicket, testInClassifier, ins
         <article><span>Temas recorrentes</span><strong>{fmt.format(insights.recurring_themes)}</strong><small>3+ tickets abertos</small></article>
       </div>
       <div className="triage-insight-grid">
-        <article className="panel triage-risk-chart"><h3>Backlog por risco</h3><div className="triage-risk-content"><ResponsiveContainer width="100%" height={190}><PieChart><Pie data={insights.risk_distribution} dataKey="value" nameKey="name" innerRadius={45} outerRadius={72}>{insights.risk_distribution.map(x => <Cell key={x.name} fill={COLORS[x.name]}/>)}</Pie><Tooltip/></PieChart></ResponsiveContainer><div className="risk-legend">{insights.risk_distribution.map(item => <div key={item.name}><span style={{backgroundColor: COLORS[item.name]}}/><b>{item.name}</b><strong>{fmt.format(item.value)}</strong></div>)}</div></div></article>
+        <article className="panel triage-risk-chart"><h3>Backlog por risco</h3><div className="triage-risk-content"><ResponsiveContainer width="100%" height={270}><PieChart><Pie data={insights.risk_distribution} dataKey="value" nameKey="name" innerRadius={70} outerRadius={110}>{insights.risk_distribution.map(x => <Cell key={x.name} fill={COLORS[x.name]}/>)}</Pie><Tooltip/></PieChart></ResponsiveContainer><div className="risk-legend">{insights.risk_distribution.map(item => <div key={item.name}><span style={{backgroundColor: COLORS[item.name]}}/><b>{item.name}</b><strong>{fmt.format(item.value)}</strong></div>)}</div></div></article>
         <article className="panel bottleneck-panel"><h3>Ranking de gargalos</h3><div className="bottleneck-list">{insights.bottlenecks.map((item, index) => <div className="bottleneck-row" key={`${item.ticket_type}-${item.subject}`}><span className="bottleneck-rank">#{index + 1}</span><div><b>{item.subject}</b><small>{item.ticket_type} · {item.open_tickets} não encerrados</small><em>{item.action}</em></div>{(item.high_risk > 0 || item.critical > 0) && <span className="bottleneck-alert">{item.critical ? `${item.critical} crítico${item.critical > 1 ? 's' : ''}` : `${item.high_risk} risco alto`}</span>}</div>)}</div></article>
       </div>
       <p className="triage-data-note"><b>Fonte:</b> {insights.source_note} {insights.limitation}</p>
@@ -774,6 +774,9 @@ function Diagnostics({data}) {
       <p className="warning">Implicação: não existe alavanca comprovada sobre o CSAT nestes dados. A proposta mede resultado (CSAT, reabertura, backlog) em piloto controlado em vez de prometer ganho de satisfação.</p>
     </section>
 
+    <Waste waste={data.waste}/>
+    <Ranking ranking={data.combination_ranking}/>
+
     <section className="grid two">
       <article className="panel">
         <h2>Auditoria de qualidade dos dados</h2>
@@ -797,6 +800,43 @@ function Diagnostics({data}) {
       </article>
     </section>
   </>;
+}
+
+function Waste({waste}) {
+  const a = waste.assumptions, w = waste.customer_wait;
+  const usd = v => `US$ ${fmt.format(v)}`;
+  return <section className="panel">
+    <h2>Quanto estamos desperdiçando?</h2>
+    <p>Horas de agente recuperáveis por ano, em dois volumes (arquivo e briefing). <b>São estimativas por premissa</b>: o dataset não mede esforço do agente. Custo-hora: US$ {a.cost_per_hour_usd}.</p>
+    <div className="table compact diag-table waste-table">
+      <div className="table-head"><span>Fonte de desperdício</span><span>Alavanca</span><span>h/ano (arquivo)</span><span>h/ano (briefing)</span><span>US$/ano (briefing)</span><span>Premissa</span></div>
+      {waste.components.map(c => <div className="ticket-row" key={c.key}>
+        <span><b>{c.name}</b></span><span>{c.lever}</span><span>{fmt.format(c.hours_year_dataset)}</span><span>{fmt.format(c.hours_year_brief)}</span><span>{usd(c.usd_year_brief)}</span><span><small>{c.assumption}</small></span>
+      </div>)}
+    </div>
+    <div className="metrics waste-kpis">
+      {[
+        ['Recuperável por IA (briefing)', `${fmt.format(waste.ai_hours_year_brief)} h/ano`, `${usd(waste.ai_usd_year_brief)} · arquivo: ${fmt.format(waste.ai_hours_year_dataset)} h`],
+        ['Maior desperdício', waste.largest_component, 'resolve-se com processo, não com IA'],
+        ['Espera excedente do cliente', `${fmt.format(w.excess_hours_over_median)} h`, `${pctInt(w.excess_share_of_total)} do tempo observado em ${fmt.format(w.valid_pairs)} pares válidos`],
+      ].map(([x, y, z]) => <article key={x}><span>{x}</span><strong className="waste-value">{y}</strong><small>{z}</small></article>)}
+    </div>
+    <p className="similar-intro"><b>Sensibilidade do backlog</b> (releituras por mês por ticket parado, volume do briefing): {waste.backlog_sensitivity.map(x => `${x.retouches_per_month}× → ${fmt.format(x.hours_year_brief)} h/ano`).join(' · ')}. {waste.caveat}</p>
+  </section>;
+}
+
+function Ranking({ranking}) {
+  return <section className="panel">
+    <h2>Piores combinações canal × prioridade × tipo</h2>
+    <p>{ranking.method} Base: {fmt.format(ranking.valid_pairs)} pares válidos em {ranking.combinations} combinações; média geral {ranking.overall_mean_hours}h.</p>
+    <div className="table compact diag-table rank-table">
+      <div className="table-head"><span>Combinação</span><span>n válido</span><span>Média (h)</span><span>± IC95</span><span>CSAT</span><span/></div>
+      {ranking.worst.map((r, i) => <div className="ticket-row" key={`${r.channel}${r.priority}${r.type}`}>
+        <span><b>#{i + 1} {r.channel} · {r.priority}</b><small>{r.type}</small></span><span>{r.n}</span><span>{r.mean_hours}</span><span>±{r.ci95}</span><span>{r.csat ?? '—'}</span><span/>
+      </div>)}
+    </div>
+    <p className={ranking.is_signal ? 'similar-intro' : 'warning'}>{ranking.conclusion} Pior média observada: {ranking.worst_mean_hours}h; pior média esperada por acaso: {ranking.null_worst_mean_hours}h (p={ranking.permutation_p}).</p>
+  </section>;
 }
 
 function ThresholdCurve({metrics}) {

@@ -232,3 +232,96 @@ class SimilarCaseIndex:
                 total += 1
         chance = float((self.labels.value_counts(normalize=True) ** 2).sum())
         return {"k": k, "queries": int(len(picks)), "precision_at_k": round(hits / max(total, 1), 3), "chance": round(chance, 3)}
+
+
+def combination_ranking(support: pd.DataFrame, min_valid: int = 10, top: int = 8) -> dict[str, Any]:
+    """Worst channel × priority × type combinations by valid post-response time, tested against shuffled data.
+
+    The ranking is only reported as a finding if the worst combination is worse than what random shuffling
+    of the same durations produces; otherwise it is labelled as noise.
+    """
+    frame = support.copy()
+    frame["hours"] = [duration_hours(a, b) for a, b in zip(frame["First Response Time"], frame["Time to Resolution"])]
+    frame["csat"] = pd.to_numeric(frame["Customer Satisfaction Rating"], errors="coerce")
+    valid = frame.dropna(subset=["hours"]).copy()
+    keys = ["Ticket Channel", "Ticket Priority", "Ticket Type"]
+    grouped = valid.groupby(keys).agg(n=("hours", "count"), mean_hours=("hours", "mean"), sd=("hours", "std"), csat=("csat", "mean")).reset_index()
+    grouped = grouped[grouped.n >= min_valid].copy()
+    grouped["ci95"] = 1.96 * grouped.sd / np.sqrt(grouped.n)
+    ranked = grouped.sort_values("mean_hours", ascending=False)
+
+    labels = valid[keys].astype(str).agg("|".join, axis=1).to_numpy()
+    sizes = pd.Series(labels).value_counts()
+    eligible_labels = set(sizes[sizes >= min_valid].index)
+    mask = np.array([label in eligible_labels for label in labels])
+    values, groups = valid["hours"].to_numpy()[mask], labels[mask]
+    rng = np.random.default_rng(42)
+
+    def worst_mean(vals: np.ndarray) -> float:
+        return float(pd.Series(vals).groupby(groups).mean().max())
+
+    observed = worst_mean(values)
+    null = np.array([worst_mean(rng.permutation(values)) for _ in range(500)])
+    p_value = float((null >= observed).mean())
+    return {
+        "valid_pairs": int(len(valid)), "combinations": int(len(grouped)), "min_valid": min_valid,
+        "worst": [{"channel": r["Ticket Channel"], "priority": r["Ticket Priority"], "type": r["Ticket Type"], "n": int(r["n"]),
+                   "mean_hours": round(float(r["mean_hours"]), 1), "ci95": round(float(r["ci95"]), 1), "csat": None if pd.isna(r["csat"]) else round(float(r["csat"]), 2)}
+                  for _, r in ranked.head(top).iterrows()],
+        "overall_mean_hours": round(float(valid["hours"].mean()), 1),
+        "worst_mean_hours": round(observed, 1), "null_worst_mean_hours": round(float(null.mean()), 1), "permutation_p": round(p_value, 3),
+        "is_signal": bool(p_value < ALPHA),
+        "conclusion": ("A pior combinação é pior do que o acaso produziria: há gargalo localizado."
+                       if p_value < ALPHA else
+                       "A pior combinação não é pior do que o ranking obtido embaralhando os próprios tempos: a ordem abaixo é ruído amostral (n pequeno por célula) e não deve orientar ação."),
+        "method": f"Média do tempo pós-1ª resposta (pares válidos) por canal × prioridade × tipo, células com n ≥ {min_valid}; teste de permutação (500 embaralhamentos) para a pior média.",
+    }
+
+
+# Planning assumptions, not measured values: the dataset has no agent-effort data. Exposed in the UI so they can be challenged.
+EFFORT_ASSUMPTIONS = {"cost_per_hour_usd": 18, "manual_triage_minutes": 2, "draft_minutes": 6, "draft_assist_rate": 0.35, "backlog_retouch_minutes": 5, "backlog_retouches_per_month": 1}
+
+
+def waste_estimate(support: pd.DataFrame, auto_route_coverage: float, brief_annual_tickets: int = 30000) -> dict[str, Any]:
+    """Recoverable agent hours (assumption-based) plus customer waiting time (data-based, valid pairs only)."""
+    a = EFFORT_ASSUMPTIONS
+    total = len(support)
+    not_closed = float((support["Ticket Status"] != "Closed").mean())
+    eligible = float(((support["Ticket Type"] != "Billing inquiry") & support["Ticket Priority"].isin(["Low", "Medium"])).mean())
+    components = [
+        {"key": "backlog", "name": "Retrabalho do backlog parado", "lever": "Processo (não é IA)", "basis_share": not_closed, "minutes": a["backlog_retouch_minutes"] * a["backlog_retouches_per_month"] / 12,
+         "assumption": f"{a['backlog_retouches_per_month']} releitura/mês por ticket não encerrado × {a['backlog_retouch_minutes']} min"},
+        {"key": "triage", "name": "Triagem manual de tickets roteáveis", "lever": "IA: classificador ≥ limiar", "basis_share": auto_route_coverage, "minutes": a["manual_triage_minutes"],
+         "assumption": f"{a['manual_triage_minutes']} min por ticket × cobertura automática medida ({auto_route_coverage:.0%}, Dataset 2)"},
+        {"key": "draft", "name": "Redação de respostas elegíveis", "lever": "IA: copiloto com revisão", "basis_share": eligible * a["draft_assist_rate"], "minutes": a["draft_minutes"],
+         "assumption": f"{a['draft_minutes']} min × {a['draft_assist_rate']:.0%} de assistência × tickets Low/Medium não financeiros ({eligible:.0%})"},
+    ]
+    for volume_key, tickets_year in (("dataset", total), ("brief", brief_annual_tickets)):
+        for c in components:
+            if c["key"] == "backlog":
+                # Stock of not-closed tickets re-read N times a month for 12 months.
+                hours_year = tickets_year * c["basis_share"] * a["backlog_retouches_per_month"] * a["backlog_retouch_minutes"] * 12 / 60
+            else:
+                hours_year = tickets_year * c["basis_share"] * c["minutes"] / 60
+            c[f"hours_year_{volume_key}"] = round(hours_year)
+            c[f"usd_year_{volume_key}"] = round(hours_year * a["cost_per_hour_usd"])
+
+    frame = support.copy()
+    frame["hours"] = [duration_hours(x, y) for x, y in zip(frame["First Response Time"], frame["Time to Resolution"])]
+    valid = frame.dropna(subset=["hours"])
+    median = float(valid["hours"].median())
+    excess = (valid["hours"] - median).clip(lower=0)
+    biggest = max(components, key=lambda c: c["hours_year_brief"])
+    return {
+        "assumptions": a, "components": [{k: (round(v, 3) if isinstance(v, float) else v) for k, v in c.items()} for c in components],
+        "ai_hours_year_dataset": sum(c["hours_year_dataset"] for c in components if c["key"] != "backlog"), "ai_usd_year_dataset": sum(c["usd_year_dataset"] for c in components if c["key"] != "backlog"),
+        "ai_hours_year_brief": sum(c["hours_year_brief"] for c in components if c["key"] != "backlog"), "ai_usd_year_brief": sum(c["usd_year_brief"] for c in components if c["key"] != "backlog"),
+        "backlog_sensitivity": [{"retouches_per_month": t, "hours_year_dataset": round(total * not_closed * t * a["backlog_retouch_minutes"] * 12 / 60), "hours_year_brief": round(brief_annual_tickets * not_closed * t * a["backlog_retouch_minutes"] * 12 / 60)} for t in (0.5, 1, 2)],
+        "total_hours_year_dataset": sum(c["hours_year_dataset"] for c in components), "total_usd_year_dataset": sum(c["usd_year_dataset"] for c in components),
+        "total_hours_year_brief": sum(c["hours_year_brief"] for c in components), "total_usd_year_brief": sum(c["usd_year_brief"] for c in components),
+        "largest_component": biggest["name"],
+        "customer_wait": {"valid_pairs": int(len(valid)), "median_hours": round(median, 1), "mean_hours": round(float(valid["hours"].mean()), 1),
+                          "excess_hours_over_median": round(float(excess.sum())), "excess_share_of_total": round(float(excess.sum() / valid["hours"].sum()), 3),
+                          "note": "Tempo de espera do cliente (não esforço do agente), só nos pares de timestamp válidos; não é extrapolado."},
+        "caveat": "Horas de agente são estimativas por premissa (o dataset não mede esforço). Mudar as premissas muda o resultado de forma proporcional.",
+    }

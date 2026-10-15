@@ -20,6 +20,11 @@ Kruskal–Wallis para cada variável (canal, prioridade, tipo, assunto, produto,
 
 O sinal confiável do dataset é o **status**: 67% dos tickets não estão encerrados, e a taxa é estatisticamente indistinta entre Critical e Low (χ², p ≈ 0,10). Ou seja, a prioridade declarada não está orientando o atendimento. Diferenças de tempo entre canal/prioridade não são interpretadas porque a duração é inválida em metade dos pares.
 
+## 3.1 Combinações e desperdício
+
+- **Ranking canal × prioridade × tipo:** média do tempo pós-resposta por combinação (n ≥ 10 pares válidos), com IC95 e teste de permutação (500 embaralhamentos) para a pior média. Resultado: 11,4h observado contra 11,2h esperado por acaso (p=0,35), ou seja, o ranking não é sinal.
+- **Desperdício:** horas de agente = premissas explícitas (releitura de backlog 1×/mês × 5 min; triagem manual 2 min × cobertura automática medida; redação 6 min × 35% × elegíveis) multiplicadas por contagens reais. A sensibilidade do backlog (0,5×, 1×, 2×) é exibida. Espera do cliente (horas acima da mediana) é dado observado, só nos pares válidos, sem extrapolação.
+
 ## 4. Onde o texto funciona (prova de sinal)
 
 | Experimento | Acurácia / precisão | Acaso |

@@ -136,3 +136,9 @@ button.secondary:hover{background:#233554;color:#fff}
 .result-similar{margin-top:16px}
 @media(max-width:900px){.diag-row{grid-template-columns:1fr 1fr}.diag-table{min-width:0}}
 .scenario-three{grid-template-columns:1fr 1fr 1fr}.scenario-head{color:#7f90a9;font-size:11px;border-bottom:1px solid #26385a;grid-template-columns:1fr 1fr 1fr}.scenario-three span strong,.scenario-three span small{display:block}.scenario-three small{margin-top:3px}
+/* Gráfico de risco maior, com legenda abaixo */
+.triage-risk-content{display:flex;flex-direction:column;align-items:stretch;height:auto;gap:10px}
+.risk-legend{grid-template-columns:repeat(3,1fr);gap:10px}
+.risk-legend div{grid-template-columns:10px 1fr;grid-template-rows:auto auto;row-gap:2px;background:#0c172b;border:1px solid #26385a;border-radius:8px;padding:8px 10px}
+.risk-legend strong{grid-column:2;font-size:16px}
+.waste-table .table-head,.waste-table .ticket-row{grid-template-columns:1.5fr 1.1fr .8fr .8fr .9fr 2fr}.waste-kpis{grid-template-columns:repeat(3,1fr);margin:16px 0 8px}.waste-value{font-size:18px!important}.rank-table .table-head,.rank-table .ticket-row{grid-template-columns:2fr .6fr .7fr .7fr .6fr .5fr}

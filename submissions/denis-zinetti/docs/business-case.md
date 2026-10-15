@@ -53,6 +53,10 @@ escrita e triagem pelo agente, não ao tempo total do ticket — premissa separa
 
 ---
 
+### Desperdício atual (visão complementar)
+
+A aba Diagnóstico estima o desperdício em três fontes, sempre rotuladas como premissa: retrabalho do backlog parado (~20 mil h/ano no volume do briefing, alavanca de **processo**), triagem manual de tickets roteáveis e redação de respostas elegíveis (~970 h/ano juntas, alavanca de **IA**, ≈ US$ 17 mil/ano). O ROI de IA acima (cenário base) usa só a redação; a triagem é um ganho adicional. O ponto central: o maior desperdício não é endereçado por IA.
+
 ## 2. Qualidade de atendimento
 
 **Não há evidência de que algum fator operacional mude o CSAT neste dataset.** Em 8 variáveis testadas
